@@ -388,10 +388,14 @@ struct task_group {
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	/* schedulable entities of this group on each CPU */
+	/* se[i] 表示该 task_group 中在第 i 个 CPU 上的 sched_entity, 该 se
+	* 代表的是一个任务组，即 sched_entity->my_q 指向该结构体的 cfs_rq[cpu] */
 	struct sched_entity	**se;
 	/* runqueue "owned" by this group on each CPU */
+	/* cfs_rq[i] 表示该 task_group 中在第 i 个 CPU 上的 cfs_rq. 在函数
+	* alloc_fair_sched_group 中初始化 */
 	struct cfs_rq		**cfs_rq;
-	unsigned long		shares;
+	unsigned long		shares; // 该task_group的cpu.shares,表示该task_group的权重
 
 #ifdef	CONFIG_SMP
 	/*
@@ -519,24 +523,24 @@ struct cfs_bandwidth { };
 
 /* CFS-related fields in a runqueue */
 struct cfs_rq {
-	struct load_weight	load;
-	unsigned int		nr_running;
+	struct load_weight	load; // 保存cfs整个运行队列的总权重，用于给每个调度实体计算vruntime
+	unsigned int		nr_running; // 处于runnable状态的se的总数
 	unsigned int		h_nr_running;      /* SCHED_{NORMAL,BATCH,IDLE} */
 	unsigned int		idle_h_nr_running; /* SCHED_IDLE */
 
-	u64			exec_clock;
-	u64			min_vruntime;
+	u64			exec_clock; // cfs_rq的总运行时间，用于统计
+	u64			min_vruntime; // 当前队列最小的vruntime
 #ifndef CONFIG_64BIT
 	u64			min_vruntime_copy;
 #endif
 
-	struct rb_root_cached	tasks_timeline;
+	struct rb_root_cached	tasks_timeline; // 保存一个指向红黑树根节点与最左子节点的缓存
 
 	/*
 	 * 'curr' points to currently running entity on this cfs_rq.
 	 * It is set to NULL otherwise (i.e when none are currently running).
 	 */
-	struct sched_entity	*curr;
+	struct sched_entity	*curr; // 当前正在运行的se
 	struct sched_entity	*next;
 	struct sched_entity	*last;
 	struct sched_entity	*skip;
@@ -957,7 +961,7 @@ struct rq {
 	unsigned int		clock_update_flags;
 	u64			clock;
 	/* Ensure that all clocks are in the same cache line */
-	u64			clock_task ____cacheline_aligned;
+	u64			clock_task ____cacheline_aligned; // 实际运行的物理时间，除去中断时间
 	u64			clock_pelt;
 	unsigned long		lost_idle_time;
 
@@ -1787,12 +1791,12 @@ struct sched_class {
 
 	void (*enqueue_task) (struct rq *rq, struct task_struct *p, int flags);
 	void (*dequeue_task) (struct rq *rq, struct task_struct *p, int flags);
-	void (*yield_task)   (struct rq *rq);
+	void (*yield_task)   (struct rq *rq); // 任务主动让出cpu
 	bool (*yield_to_task)(struct rq *rq, struct task_struct *p);
 
-	void (*check_preempt_curr)(struct rq *rq, struct task_struct *p, int flags);
+	void (*check_preempt_curr)(struct rq *rq, struct task_struct *p, int flags); // 检查p是否会抢占当前任务
 
-	struct task_struct *(*pick_next_task)(struct rq *rq);
+	struct task_struct *(*pick_next_task)(struct rq *rq); // 从rq中选择下一个任务来运行
 
 	void (*put_prev_task)(struct rq *rq, struct task_struct *p);
 	void (*set_next_task)(struct rq *rq, struct task_struct *p, bool first);

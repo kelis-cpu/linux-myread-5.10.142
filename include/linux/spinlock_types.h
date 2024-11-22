@@ -18,7 +18,7 @@
 #include <linux/lockdep_types.h>
 
 typedef struct raw_spinlock {
-	arch_spinlock_t raw_lock;
+	arch_spinlock_t raw_lock; // volatile的整数
 #ifdef CONFIG_DEBUG_SPINLOCK
 	unsigned int magic, owner_cpu;
 	void *owner;

@@ -221,7 +221,7 @@ void check_and_switch_context(struct mm_struct *mm)
 	if (system_supports_cnp())
 		cpu_set_reserved_ttbr0();
 
-	asid = atomic64_read(&mm->context.id);
+	asid = atomic64_read(&mm->context.id); // 拿下切换线程的ASID
 
 	/*
 	 * The memory ordering here is subtle.
@@ -245,7 +245,7 @@ void check_and_switch_context(struct mm_struct *mm)
 
 	raw_spin_lock_irqsave(&cpu_asid_lock, flags);
 	/* Check that our ASID belongs to the current generation. */
-	asid = atomic64_read(&mm->context.id);
+	asid = atomic64_read(&mm->context.id); // 将切换线程的ASID绑定到当前cpu
 	if (!asid_gen_match(asid)) {
 		asid = new_context(mm);
 		atomic64_set(&mm->context.id, asid);
@@ -267,7 +267,7 @@ switch_mm_fastpath:
 	 * emulating PAN.
 	 */
 	if (!system_uses_ttbr0_pan())
-		cpu_switch_mm(mm->pgd, mm);
+		cpu_switch_mm(mm->pgd, mm); // 切换页表
 }
 
 unsigned long arm64_mm_context_get(struct mm_struct *mm)

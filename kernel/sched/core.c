@@ -3373,9 +3373,9 @@ void wake_up_new_task(struct task_struct *p)
 	update_rq_clock(rq);
 	post_init_entity_util_avg(p);
 
-	activate_task(rq, p, ENQUEUE_NOCLOCK);
+	activate_task(rq, p, ENQUEUE_NOCLOCK); // 调用sched_class中的enqueue_task将该任务入队
 	trace_sched_wakeup_new(p);
-	check_preempt_curr(rq, p, WF_FORK);
+	check_preempt_curr(rq, p, WF_FORK); // 调用sched_class.check_preempt_curr函数
 #ifdef CONFIG_SMP
 	if (p->sched_class->task_woken) {
 		/*
@@ -3763,11 +3763,11 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	 *   user ->   user   switch
 	 */
 	if (!next->mm) {                                // to kernel
-		enter_lazy_tlb(prev->active_mm, next);
+		enter_lazy_tlb(prev->active_mm, next); // 标识cpu，不进行无效的tlb刷新
 
 		next->active_mm = prev->active_mm;
 		if (prev->mm)                           // from user
-			mmgrab(prev->active_mm);
+			mmgrab(prev->active_mm); // 借用前一个线程的active_mm，增加引用计数
 		else
 			prev->active_mm = NULL;
 	} else {                                        // to user
@@ -3780,7 +3780,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 		 * case 'prev->active_mm == next->mm' through
 		 * finish_task_switch()'s mmdrop().
 		 */
-		switch_mm_irqs_off(prev->active_mm, next->mm, next);
+		switch_mm_irqs_off(prev->active_mm, next->mm, next); // 切换虚拟内存
 
 		if (!prev->mm) {                        // from kernel
 			/* will mmdrop() in finish_task_switch(). */
@@ -3794,7 +3794,7 @@ context_switch(struct rq *rq, struct task_struct *prev,
 	prepare_lock_switch(rq, next, rf);
 
 	/* Here we just switch the register state and the stack. */
-	switch_to(prev, next, prev);
+	switch_to(prev, next, prev); // 切换寄存器和堆栈
 	barrier();
 
 	return finish_task_switch(prev);
@@ -4015,7 +4015,7 @@ void scheduler_tick(void)
 	update_rq_clock(rq);
 	thermal_pressure = arch_scale_thermal_pressure(cpu_of(rq));
 	update_thermal_load_avg(rq_clock_thermal(rq), rq, thermal_pressure);
-	curr->sched_class->task_tick(rq, curr, 0);
+	curr->sched_class->task_tick(rq, curr, 0); // 调用当前任务的调度类的task_tick方法
 	calc_global_load_tick(rq);
 	psi_task_tick(rq);
 
@@ -4357,6 +4357,7 @@ pick_next_task(struct rq *rq, struct task_struct *prev, struct rq_flags *rf)
 	 * higher scheduling class, because otherwise those loose the
 	 * opportunity to pull in more work from other CPUs.
 	 */
+	 // 五大调度器类，优先级：idle < fair < rt < dl < stop
 	if (likely(prev->sched_class <= &fair_sched_class &&
 		   rq->nr_running == rq->cfs.h_nr_running)) {
 
@@ -4434,9 +4435,9 @@ static void __sched notrace __schedule(bool preempt)
 	struct rq *rq;
 	int cpu;
 
-	cpu = smp_processor_id();
-	rq = cpu_rq(cpu);
-	prev = rq->curr;
+	cpu = smp_processor_id(); // 获取当前cpu
+	rq = cpu_rq(cpu); // 获取当前cpu上的进程队列
+	prev = rq->curr; // 获取当前队列上正在运行的进程
 
 	schedule_debug(prev, preempt);
 
@@ -4468,7 +4469,7 @@ static void __sched notrace __schedule(bool preempt)
 	rq->clock_update_flags <<= 1;
 	update_rq_clock(rq);
 
-	switch_count = &prev->nivcsw;
+	switch_count = &prev->nivcsw; // 进程非主动切换次数
 
 	/*
 	 * We must load prev->state once (task_struct::state is volatile), such
@@ -4508,10 +4509,10 @@ static void __sched notrace __schedule(bool preempt)
 				delayacct_blkio_start();
 			}
 		}
-		switch_count = &prev->nvcsw;
+		switch_count = &prev->nvcsw; // 进程主动切换次数
 	}
 
-	next = pick_next_task(rq, prev, &rf);
+	next = pick_next_task(rq, prev, &rf); // 根据某种算法从就绪队列中选中一个进程
 	clear_tsk_need_resched(prev);
 	clear_preempt_need_resched();
 
@@ -4543,7 +4544,7 @@ static void __sched notrace __schedule(bool preempt)
 		trace_sched_switch(preempt, prev, next);
 
 		/* Also unlocks the rq: */
-		rq = context_switch(rq, prev, next, &rf);
+		rq = context_switch(rq, prev, next, &rf); // 执行上下文切换
 	} else {
 		rq->clock_update_flags &= ~(RQCF_ACT_SKIP|RQCF_REQ_SKIP);
 		rq_unlock_irq(rq, &rf);
@@ -4620,9 +4621,9 @@ asmlinkage __visible void __sched schedule(void)
 
 	sched_submit_work(tsk);
 	do {
-		preempt_disable();
+		preempt_disable(); // 调度过程禁止抢占
 		__schedule(false);
-		sched_preempt_enable_no_resched();
+		sched_preempt_enable_no_resched(); // 调度完可以抢占
 	} while (need_resched());
 	sched_update_worker(tsk);
 }

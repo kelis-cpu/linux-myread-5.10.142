@@ -323,8 +323,8 @@ struct sched_info {
 # define SCHED_CAPACITY_SCALE		(1L << SCHED_CAPACITY_SHIFT)
 
 struct load_weight {
-	unsigned long			weight;
-	u32				inv_weight;
+	unsigned long			weight; // nice对应的权重数组sched_prio_to_weight中的值
+	u32				inv_weight; // 记录sched_prio_to_wmult数组中的值 2^32 / weight
 };
 
 /**
@@ -458,15 +458,15 @@ struct sched_statistics {
 
 struct sched_entity {
 	/* For load-balancing: */
-	struct load_weight		load;
-	struct rb_node			run_node;
+	struct load_weight		load; // 当前se的权重信息，由进程nice值计算得到
+	struct rb_node			run_node; // 指向该se在红黑树中的节点
 	struct list_head		group_node;
-	unsigned int			on_rq;
+	unsigned int			on_rq; // 是否在runqueue上，1在0不在
 
-	u64				exec_start;
-	u64				sum_exec_runtime;
-	u64				vruntime;
-	u64				prev_sum_exec_runtime;
+	u64				exec_start; // 当se被调度时，记录其开始执行的时间
+	u64				sum_exec_runtime; // 记录运行总时间
+	u64				vruntime; // 该进程虚拟时间，红黑树的key
+	u64				prev_sum_exec_runtime; // 截止该调度周期开始时，进程的总运行时间
 
 	u64				nr_migrations;
 
@@ -474,11 +474,11 @@ struct sched_entity {
 
 #ifdef CONFIG_FAIR_GROUP_SCHED
 	int				depth;
-	struct sched_entity		*parent;
+	struct sched_entity		*parent; // parent非空的话，那么一定指向一个代表task_group的sched_entity,即my_q非空
 	/* rq on which this entity is (to be) queued: */
 	struct cfs_rq			*cfs_rq;
 	/* rq "owned" by this entity/group: */
-	struct cfs_rq			*my_q;
+	struct cfs_rq			*my_q; // 用来判断该 se 是否是一个 task, 如果 my_q 为null, 则是task, 否则则表示是一个task_group 参考宏 entity_is_task
 	/* cached value of my_q->h_nr_running */
 	unsigned long			runnable_weight;
 #endif
@@ -694,7 +694,7 @@ struct task_struct {
 
 	const struct sched_class	*sched_class;
 	struct sched_entity		se;
-	struct sched_rt_entity		rt;
+	struct sched_rt_entity		rt; // 运行队列
 #ifdef CONFIG_CGROUP_SCHED
 	struct task_group		*sched_task_group;
 #endif
@@ -758,8 +758,8 @@ struct task_struct {
 	struct rb_node			pushable_dl_tasks;
 #endif
 
-	struct mm_struct		*mm;
-	struct mm_struct		*active_mm;
+	struct mm_struct		*mm; // 用户线程指向虚拟地址空间的用户空间部分，内核线程为NULL
+	struct mm_struct		*active_mm; // 用户线程：mm == active_mm, 内核线程：前一个运行进程的active_mm值
 
 	/* Per-thread vma caching: */
 	struct vmacache			vmacache;
@@ -901,8 +901,8 @@ struct task_struct {
 	atomic_t			tick_dep_mask;
 #endif
 	/* Context switch counts: */
-	unsigned long			nvcsw;
-	unsigned long			nivcsw;
+	unsigned long			nvcsw; // number of voluntary context switch
+	unsigned long			nivcsw; // number of involuntary context switch
 
 	/* Monotonic time in nsecs: */
 	u64				start_time;
@@ -1721,7 +1721,7 @@ union thread_union {
 #ifndef CONFIG_THREAD_INFO_IN_TASK
 	struct thread_info thread_info;
 #endif
-	unsigned long stack[THREAD_SIZE/sizeof(long)];
+	unsigned long stack[THREAD_SIZE/sizeof(long)]; // 内核栈大小：8kb
 };
 
 #ifndef CONFIG_THREAD_INFO_IN_TASK

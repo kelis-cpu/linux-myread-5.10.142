@@ -566,7 +566,7 @@ __notrace_funcgraph struct task_struct *__switch_to(struct task_struct *prev,
 	mte_thread_switch(next);
 
 	/* the actual thread switch */
-	last = cpu_switch_to(prev, next);
+	last = cpu_switch_to(prev, next); // 实际线程切换方法
 
 	return last;
 }

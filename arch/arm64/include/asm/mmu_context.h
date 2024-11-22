@@ -233,6 +233,7 @@ static inline void
 switch_mm(struct mm_struct *prev, struct mm_struct *next,
 	  struct task_struct *tsk)
 {
+	// 如果不是同一个线程
 	if (prev != next)
 		__switch_mm(next);
 

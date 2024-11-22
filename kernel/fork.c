@@ -2072,7 +2072,7 @@ static __latent_entropy struct task_struct *copy_process(
 #endif
 
 	/* Perform scheduler related setup. Assign this task to a CPU. */
-	retval = sched_fork(clone_flags, p);
+	retval = sched_fork(clone_flags, p); // 调度相关字段初始化
 	if (retval)
 		goto bad_fork_cleanup_policy;
 
@@ -2463,7 +2463,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 			trace = 0;
 	}
 
-	p = copy_process(NULL, trace, NUMA_NO_NODE, args);
+	p = copy_process(NULL, trace, NUMA_NO_NODE, args); // 创建新的task_struct
 	add_latent_entropy();
 
 	if (IS_ERR(p))
@@ -2487,7 +2487,7 @@ pid_t kernel_clone(struct kernel_clone_args *args)
 		get_task_struct(p);
 	}
 
-	wake_up_new_task(p);
+	wake_up_new_task(p); // 检查新创建的任务是否需要抢占当前任务
 
 	/* forking complete and child started to run, tell ptracer */
 	if (unlikely(trace))
