@@ -3038,8 +3038,10 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 			unsigned long addr)
 
 {
-	void *prior;
-	int was_frozen;
+	void *prior; // 用于指向对象释放回 slub 之前，slub 的 freelist
+	int was_frozen;  // 对象所属的 slub 之前是否在本地 cpu 缓存 partial 链表中
+	// 后续会对 slub 对应的 page 结构相关属性进行修改
+    // 修改后的属性会临时保存在 new 中，后面通过 cas 替换
 	struct page new;
 	unsigned long counters;
 	struct kmem_cache_node *n = NULL;
@@ -3047,6 +3049,7 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 
 	stat(s, FREE_SLOWPATH);
 
+	// free_debug_processing 中会调用 init_object，清理对象内存无用信息，重新恢复对象内存布局到初始状态
 	if (kmem_cache_debug(s) &&
 	    !free_debug_processing(s, page, head, tail, cnt, addr))
 		return;
@@ -3056,16 +3059,24 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 			spin_unlock_irqrestore(&n->list_lock, flags);
 			n = NULL;
 		}
-		prior = page->freelist;
+		prior = page->freelist; // 获取 slub 中的空闲对象列表，prior = null 表示此时 slub 是一个 full slub，意思就是该 slub 中的对象已经全部被分配出去了
 		counters = page->counters;
+		// 将释放的对象插入到 freelist 的头部，将对象释放回 slub
+        // 将 tail 对象的 freepointer 设置为 prior
 		set_freepointer(s, tail, prior);
-		new.counters = counters;
-		was_frozen = new.frozen;
-		new.inuse -= cnt;
+		new.counters = counters; // 将原有 slab 的相应属性赋值给 new page
+		was_frozen = new.frozen; // 获取原来 slub 中的 frozen 状态，是否在 cpu 缓存 partial 链表中
+		new.inuse -= cnt; // inuse 表示 slub 已经分配出去的对象个数，这里是释放 cnt 个对象，所以 inuse 要减去 cnt
+		// !new.inuse 表示此时 slub 变为了一个 empty slub，意思就是该 slub 中的对象还没有分配出去，全部在 slub 中
+        // !prior 表示由于本次对象的释放，slub 刚刚从一个 full slub 变成了一个 partial slub (意思就是该 slub 中的对象部分分配出去了，部分没有分配出去)
+        // !was_frozen 表示该 slub 不在 cpu 本地缓存中
 		if ((!new.inuse || !prior) && !was_frozen) {
 
+			// 注意：进入该分支的 slub 之前都不在 cpu 本地缓存中
+            // 如果配置了 CONFIG_SLUB_CPU_PARTIAL 选项，那么表示 cpu 本地缓存 kmem_cache_cpu 结构中包含 partial 列表，用于 cpu 缓存部分分配的 slub
 			if (kmem_cache_has_cpu_partial(s) && !prior) {
-
+				// 如果 kmem_cache_cpu 包含 partial 列表并且该 slub 刚刚由 full slub 变为 partial slub
+                // 冻结该 slub，后续会将该 slub 插入到 kmem_cache_cpu 的 partial 列表中
 				/*
 				 * Slab was on no list before and will be
 				 * partially empty
@@ -3075,7 +3086,8 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 				new.frozen = 1;
 
 			} else { /* Needs to be taken off a list */
-
+				// 如果 kmem_cache_cpu 中没有配置 partial 列表，那么直接释放至 kmem_cache_node 中
+                // 或者该 slub 由一个 partial slub 变为了 empty slub，调整 slub 的位置到 kmem_cache_node->partial 链表中
 				n = get_node(s, page_to_nid(page));
 				/*
 				 * Speculatively acquire the list_lock.
@@ -3085,7 +3097,7 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 				 * Otherwise the list_lock will synchronize with
 				 * other processors updating the list of slabs.
 				 */
-				spin_lock_irqsave(&n->list_lock, flags);
+				spin_lock_irqsave(&n->list_lock, flags); // 后续会操作 kmem_cache_node 中的 partial 列表，所以这里需要获取 list_lock
 
 			}
 		}
@@ -3093,16 +3105,19 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 	} while (!cmpxchg_double_slab(s, page,
 		prior, counters,
 		head, new.counters,
-		"__slab_free"));
+		"__slab_free"));  // cas 更新 slub 中的 freelist 以及 counters
 
+	// 该分支要处理的场景是：
+    // 1: 该 slub 原来不在 cpu 本地缓存的 partial 列表中（!was_frozen），但是该 slub 刚刚从 full slub 变为了 partial slub，需要放入 cpu-> partial 列表中
+    // 2: 该 slub 原来就在 cpu 本地缓存的 partial 列表中，直接将对象释放回 slub 即可
 	if (likely(!n)) {
-
+		// 处理场景 1
 		if (likely(was_frozen)) {
 			/*
 			 * The list lock was not taken therefore no list
 			 * activity can be necessary.
 			 */
-			stat(s, FREE_FROZEN);
+			stat(s, FREE_FROZEN); // 处理场景2，因为之前已经通过 set_freepointer 将对象释放回 slub 了，这里只需要记录 slub 状态即可
 		} else if (new.frozen) {
 			/*
 			 * If we just froze the page then put it onto the
@@ -3115,22 +3130,35 @@ static void __slab_free(struct kmem_cache *s, struct page *page,
 		return;
 	}
 
+	// 后续的逻辑就是处理需要将 slub 放入 kmem_cache_node 中的 partial 列表的情形
+    // 在将 slub 放入 node 缓存之前，需要判断 node 缓存的 nr_partial 是否超过了指定阈值 min_partial（位于 kmem_cache 结构）
+    // nr_partial 表示 kmem_cache_node 中 partial 列表中缓存的 slub 个数
+    // min_partial 表示 slab cache 规定 kmem_cache_node 中 partial 列表可以容纳的 slub 最大个数
+    // 如果 nr_partial 超过了最大阈值 min_partial，则不能放入 kmem_cache_node 里
 	if (unlikely(!new.inuse && n->nr_partial >= s->min_partial))
+		// 如果 slub 变为了一个 empty slub 并且 nr_partial 超过了最大阈值 min_partial
+        // 跳转到 slab_empty 分支，将 slub 释放回伙伴系统中
 		goto slab_empty;
 
 	/*
 	 * Objects left in the slab. If it was not on the partial list before
 	 * then add it.
 	 */
+	 // 如果 cpu 本地缓存中没有配置 partial 列表并且 slub 刚刚从 full slub 变为 partial slub
+    // 则将 slub 插入到 kmem_cache_node 中
 	if (!kmem_cache_has_cpu_partial(s) && unlikely(!prior)) {
 		remove_full(s, n, page);
 		add_partial(n, page, DEACTIVATE_TO_TAIL);
 		stat(s, FREE_ADD_PARTIAL);
 	}
 	spin_unlock_irqrestore(&n->list_lock, flags);
+	// 剩下的情况均属于 slub 原来就在 kmem_cache_node 中的 partial 列表中
+    // 直接将对象释放回 slub 即可，无需改变 slub 的位置，直接返回
 	return;
 
 slab_empty:
+	// 该分支处理的场景是： slub 太多了，将 empty slub 释放会伙伴系统
+    // 首先将 slub 从对应的管理链表上删除
 	if (prior) {
 		/*
 		 * Slab on the partial list.
@@ -3144,7 +3172,7 @@ slab_empty:
 
 	spin_unlock_irqrestore(&n->list_lock, flags);
 	stat(s, FREE_SLAB);
-	discard_slab(s, page);
+	discard_slab(s, page); // 释放 slub 回伙伴系统，底层调用 __free_pages 将 slub 所管理的所有 page 释放回伙伴系统
 }
 
 /*
@@ -3189,9 +3217,13 @@ redo:
 	/* Same with comment on barrier() in slab_alloc_node() */
 	barrier();
 
+	// 如果释放对象所属的 slub （page 表示）正好是 cpu 本地缓存的 slub
+    // 那么直接将对象释放到 cpu 缓存的 slub 中即可，这里就是快速释放路径 fastpath
 	if (likely(page == c->page)) {
 		void **freelist = READ_ONCE(c->freelist);
 
+		// 将对象释放至 cpu 本地缓存 freelist 中的头结点处
+        // 释放对象中的 freepointer 指向原来的 c->freelist
 		set_freepointer(s, tail_obj, freelist);
 
 		if (unlikely(!this_cpu_cmpxchg_double(
@@ -3204,10 +3236,16 @@ redo:
 		}
 		stat(s, FREE_FASTPATH);
 	} else
-		__slab_free(s, page, head, tail_obj, cnt, addr);
+		__slab_free(s, page, head, tail_obj, cnt, addr); // 如果当前释放对象并不在 cpu 本地缓存中，那么就进入慢速释放路径 slowpath
 
 }
 
+/// @kmem_cache *s 表示释放对象所在的 slab cache，指定我们要将对象释放到哪里。
+/// @page 表示释放对象所在的 slab，slab 在内核中使用 struct page 结构来表示。
+/// @head 指向释放对象的虚拟内存地址（起始内存地址）。
+/// 该函数支持向 slab cache 批量的释放多个对象，@tail 指向批量释放对象中最后一个对象的虚拟内存地址。
+/// @cnt 表示释放对象的个数，也是用于批量释放对象
+/// @addr 用于 slab 调试，这里不需要关心。
 static __always_inline void slab_free(struct kmem_cache *s, struct page *page,
 				      void *head, void *tail, int cnt,
 				      unsigned long addr)
@@ -3227,12 +3265,15 @@ void ___cache_free(struct kmem_cache *cache, void *x, unsigned long addr)
 }
 #endif
 
+/// 用于将对象释放回其所属的 slab cache 中
+/// @s 指向内存块所属的 slab cache
+/// @x 要释放的内存块（对象）的虚拟内存地址
 void kmem_cache_free(struct kmem_cache *s, void *x)
 {
-	s = cache_from_obj(s, x);
+	s = cache_from_obj(s, x); // 确保指定的是 slab cache : s 为对象真正所属的 slab cache
 	if (!s)
 		return;
-	slab_free(s, virt_to_head_page(x), x, NULL, 1, _RET_IP_);
+	slab_free(s, virt_to_head_page(x), x, NULL, 1, _RET_IP_); // 将对象释放会 slab cache 中
 	trace_kmem_cache_free(_RET_IP_, x);
 }
 EXPORT_SYMBOL(kmem_cache_free);

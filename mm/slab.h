@@ -430,12 +430,13 @@ static inline void memcg_slab_free_hook(struct kmem_cache *s,
 static inline struct kmem_cache *virt_to_cache(const void *obj)
 {
 	struct page *page;
-
+	// 根据对象的虚拟内存地址 *obj 找到其所在的内存页 page
+    // 如果 slub 背后是多个内存页（复合页），则返回复合页的首页 head page
 	page = virt_to_head_page(obj);
 	if (WARN_ONCE(!PageSlab(page), "%s: Object is not a Slab page!\n",
 					__func__))
 		return NULL;
-	return page->slab_cache;
+	return page->slab_cache; // 通过 page 结构中的 slab_cache 属性找到其所属的 slub
 }
 
 static __always_inline void account_slab_page(struct page *page, int order,
@@ -463,7 +464,7 @@ static inline struct kmem_cache *cache_from_obj(struct kmem_cache *s, void *x)
 	    !kmem_cache_debug_flags(s, SLAB_CONSISTENCY_CHECKS))
 		return s;
 
-	cachep = virt_to_cache(x);
+	cachep = virt_to_cache(x); // 通过对象的虚拟内存地址 x 找到对象所属的 slab cache
 	if (WARN(cachep && cachep != s,
 		  "%s: Wrong slab cache. %s but object is from %s\n",
 		  __func__, s->name, cachep->name))
