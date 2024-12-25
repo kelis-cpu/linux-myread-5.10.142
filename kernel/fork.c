@@ -163,11 +163,11 @@ void __weak arch_release_task_struct(struct task_struct *tsk)
 }
 
 #ifndef CONFIG_ARCH_TASK_STRUCT_ALLOCATOR
-static struct kmem_cache *task_struct_cachep;
+static struct kmem_cache *task_struct_cachep; // task_struct 对象专属的 slab cache
 
 static inline struct task_struct *alloc_task_struct_node(int node)
 {
-	return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node);
+	return kmem_cache_alloc_node(task_struct_cachep, GFP_KERNEL, node); // 利用 task_struct_cachep 动态分配 task_struct 对象
 }
 
 static inline void free_task_struct(struct task_struct *tsk)
@@ -857,7 +857,7 @@ static struct task_struct *dup_task_struct(struct task_struct *orig, int node)
 
 	if (node == NUMA_NO_NODE)
 		node = tsk_fork_get_node(orig);
-	tsk = alloc_task_struct_node(node);
+	tsk = alloc_task_struct_node(node); // 从 task_struct 对象专属的 slab cache 中申请 task_struct 对象
 	if (!tsk)
 		return NULL;
 

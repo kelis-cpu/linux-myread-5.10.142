@@ -1597,11 +1597,12 @@ static inline bool slab_free_freelist_hook(struct kmem_cache *s,
 static void *setup_object(struct kmem_cache *s, struct page *page,
 				void *object)
 {
-	setup_object_debug(s, page, object);
+	setup_object_debug(s, page, object); // 初始化对象的内存区域，填充相关的字节，比如填充 red zone，以及 poison 对象
 	object = kasan_init_slab_obj(s, object);
+	// 如果 kmem_cache 中设置了对象的构造函数 ctor，则用构造函数初始化对象
 	if (unlikely(s->ctor)) {
 		kasan_unpoison_object_data(s, object);
-		s->ctor(object);
+		s->ctor(object); // 使用用户指定的构造函数初始化对象
 		kasan_poison_object_data(s, object);
 	}
 	return object;
@@ -1738,9 +1739,11 @@ static inline bool shuffle_freelist(struct kmem_cache *s, struct page *page)
 
 static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 {
-	struct page *page;
+	struct page *page; // 用于指向从伙伴系统中申请到的内存页
+	// kmem_cache 结构的中的 kmem_cache_order_objects oo，表示该 slub 需要多少个内存页，以及能够容纳多少个对象
+    // kmem_cache_order_objects 的高 16 位表示需要的内存页个数，低 16 位表示能够容纳的对象个数
 	struct kmem_cache_order_objects oo = s->oo;
-	gfp_t alloc_gfp;
+	gfp_t alloc_gfp;  // 控制向伙伴系统申请内存的行为规范掩码
 	void *start, *p, *next;
 	int idx;
 	bool shuffle;
@@ -1759,9 +1762,12 @@ static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 	alloc_gfp = (flags | __GFP_NOWARN | __GFP_NORETRY) & ~__GFP_NOFAIL;
 	if ((alloc_gfp & __GFP_DIRECT_RECLAIM) && oo_order(oo) > oo_order(s->min))
 		alloc_gfp = (alloc_gfp | __GFP_NOMEMALLOC) & ~(__GFP_RECLAIM|__GFP_NOFAIL);
-
+	// 向伙伴系统申请 oo 中规定的内存页
 	page = alloc_slab_page(s, alloc_gfp, node, oo);
 	if (unlikely(!page)) {
+		// 如果伙伴系统无法满足正常情况下 oo 指定的内存页个数
+        // 那么这里再次尝试用 min 中指定的内存页个数向伙伴系统申请内存页
+        // min 表示当内存不足或者内存碎片的原因无法满足内存分配时，至少要保证容纳一个对象所使用内存页个数
 		oo = s->min;
 		alloc_gfp = flags;
 		/*
@@ -1770,7 +1776,7 @@ static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 		 */
 		page = alloc_slab_page(s, alloc_gfp, node, oo);
 		if (unlikely(!page))
-			goto out;
+			goto out; // 如果内存还是不足，则走到 out 分支直接返回 null
 		stat(s, ORDER_FALLBACK);
 	}
 
@@ -1778,24 +1784,34 @@ static struct page *allocate_slab(struct kmem_cache *s, gfp_t flags, int node)
 
 	page->slab_cache = s;
 	__SetPageSlab(page);
+	// 将 PG_slab 标识设置到 struct page 的 flag 属性中
+    // 表示该内存页 page 被 slub 所管理
 	if (page_is_pfmemalloc(page))
 		SetPageSlabPfmemalloc(page);
 
-	kasan_poison_slab(page);
+	kasan_poison_slab(page); // 用 0xFC 填充 slub 中的内存，用于内核对内存访问越界检查
 
-	start = page_address(page);
+	start = page_address(page); // 获取内存页对应的虚拟内存地址
 
 	setup_page_debug(s, page, start);
 
+	// 在配置了 CONFIG_SLAB_FREELIST_RANDOM 选项的情况下
+    // 会在 slub 的空闲对象中以随机的顺序初始化 freelist 列表
+    // 返回值 shuffle = true 表示随机初始化 freelist，shuffle = false 表示按照正常的顺序初始化 freelist 
 	shuffle = shuffle_freelist(s, page);
 
+	// shuffle = false 则按照正常的顺序来初始化 freelist
 	if (!shuffle) {
+		 // 获取 slub 第一个空闲对象的真正起始地址
+        // slub 可能配置了 SLAB_RED_ZONE，这样会在 slub 对象内存空间两侧填充 red zone，防止内存访问越界
+        // 这里需要跳过 red zone 获取真正存放对象的内存地址
 		start = fixup_red_left(s, start);
-		start = setup_object(s, page, start);
-		page->freelist = start;
+		start = setup_object(s, page, start); // 填充对象的内存区域以及初始化空闲对象
+		page->freelist = start; // 用 slub 中的第一个空闲对象作为 freelist 的头结点，而不是随机的一个空闲对象
+		 // 从 slub 中的第一个空闲对象开始，按照正常的顺序通过对象的 freepointer 串联起 freelist
 		for (idx = 0, p = start; idx < page->objects - 1; idx++) {
 			next = p + s->size;
-			next = setup_object(s, page, next);
+			next = setup_object(s, page, next); // 初始化这些内存区域，并对 slab 对象进行内存布局
 			set_freepointer(s, p, next);
 			p = next;
 		}
@@ -2568,20 +2584,26 @@ slab_out_of_memory(struct kmem_cache *s, gfp_t gfpflags, int nid)
 static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
 			int node, struct kmem_cache_cpu **pc)
 {
-	void *freelist;
-	struct kmem_cache_cpu *c = *pc;
-	struct page *page;
+	void *freelist; // 从 numa node cache 中获取到的空闲对象列表
+	struct kmem_cache_cpu *c = *pc; // slab cache 本地 cpu 缓存
+	struct page *page; // 分配对象所在的内存页
 
 	WARN_ON_ONCE(s->ctor && (flags & __GFP_ZERO));
-
+	// 尝试从指定的 node 节点缓存 kmem_cache_node 中的 partial 列表获取可以分配空闲对象的 slub
+    // 如果指定 numa 节点的内存不足，则会根据 cpu 访问距离的远近，进行跨 numa 节点分配
 	freelist = get_partial(s, flags, node, c);
 
 	if (freelist)
 		return freelist;
 
+	// 流程走到这里说明 numa cache 里缓存的 slub 也用尽了，无法找到可以分配对象的 slub 了
+    // 只能向底层伙伴系统重新申请内存页（slub），然后从新的 slub 中分配对象
 	page = new_slab(s, flags, node);
+	// 将新申请的内存页 page （slub），缓存到 slab cache 的本地 cpu 缓存中
 	if (page) {
+		// 获取 slab cache 的本地 cpu 缓存
 		c = raw_cpu_ptr(s->cpu_slab);
+		// 刷新本地 cpu 缓存，将旧的 slub 缓存与 cpu 本地缓存解绑
 		if (c->page)
 			flush_slab(s, c);
 
@@ -2589,10 +2611,12 @@ static inline void *new_slab_objects(struct kmem_cache *s, gfp_t flags,
 		 * No other reference to the page yet so we can
 		 * muck around with it freely without cmpxchg
 		 */
+		 // 将新申请的 slub 与 cpu 本地缓存绑定，page->freelist 赋值给 kmem_cache_cpu->freelist
 		freelist = page->freelist;
 		page->freelist = NULL;
 
 		stat(s, ALLOC_SLAB);
+		// 将新申请的 slub 对应的 page 赋值给 kmem_cache_cpu->page
 		c->page = page;
 		*pc = c;
 	}
@@ -2664,12 +2688,12 @@ static inline void *get_freelist(struct kmem_cache *s, struct page *page)
 static void *___slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
 			  unsigned long addr, struct kmem_cache_cpu *c)
 {
-	void *freelist;
-	struct page *page;
+	void *freelist; // 指向 slub 中可供分配的第一个空闲对象
+	struct page *page; // 空闲对象所在的 slub （用 page 表示）
 
 	stat(s, ALLOC_SLOWPATH);
 
-	page = c->page;
+	page = c->page; // 从 slab cache 的本地 cpu 缓存中获取缓存的 slub
 	if (!page) {
 		/*
 		 * if the node is not online or has no normal memory, just
@@ -2678,6 +2702,8 @@ static void *___slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
 		if (unlikely(node != NUMA_NO_NODE &&
 			     !node_state(node, N_NORMAL_MEMORY)))
 			node = NUMA_NO_NODE;
+		// 如果缓存的 slub 中的对象已经被全部分配出去，没有空闲对象了
+        // 那么就会跳转到 new_slab 分支进行降级处理走慢速分配路径
 		goto new_slab;
 	}
 redo:
@@ -2708,13 +2734,23 @@ redo:
 	}
 
 	/* must check again c->freelist in case of cpu migration or IRQ */
+	// 这里需要再次检查 slab cache 本地 cpu 缓存中的 freelist 是否有空闲对象
+    // 因为当前进程可能被中断，当重新调度之后，其他进程可能已经释放了一些对象到缓存 slab 中
+    // freelist 可能此时就不为空了，所以需要再次尝试一下
 	freelist = c->freelist;
 	if (freelist)
-		goto load_freelist;
+		goto load_freelist; // 从 cpu 本地缓存中的 slub 中直接分配对象
 
+	// 本地 cpu 缓存的 slub 用 page 结构来表示，这里是检查 page 结构的 freelist 是否还有空闲对象
+    // c->freelist 表示的是本地 cpu 缓存的空闲对象列表，刚我们已经检查过了
+    // 现在我们检查的 page->freelist ，它表示由其他 cpu 所释放的空闲对象列表
+    // 因为此时有可能其他 cpu 又释放了一些对象到 slub 中这时 slub 对应的  page->freelist 不为空，可以直接分配
 	freelist = get_freelist(s, page);
 
+	// 注意这里的 freelist 已经变为 page->freelist ，并不是 c->freelist;
 	if (!freelist) {
+		// 此时 cpu 本地缓存的 slub 里的空闲对象已经全部耗尽
+        // slub 从 cpu 本地缓存中脱离，进入 new_slab 分支走慢速分配路径
 		c->page = NULL;
 		c->tid = next_tid(c->tid);
 		stat(s, DEACTIVATE_BYPASS);
@@ -2735,22 +2771,37 @@ load_freelist:
 	return freelist;
 
 new_slab:
-
+	// 查看 kmem_cache_cpu->partial 链表中是否有 slab 可供分配对象
 	if (slub_percpu_partial(c)) {
+		// 获取 cpu 本地缓存 kmem_cache_cpu 的 partial 列表中的第一个 slub （用 page 表示）
+        // 并将这个 slub 提升为 cpu 本地缓存中的 slub，赋值给 c->page
 		page = c->page = slub_percpu_partial(c);
+		// 将 partial 列表中第一个 slub （c->page）从 partial 列表中摘下
+        // 并将列表中的下一个 slub 更新为 partial 列表的头结点
 		slub_set_percpu_partial(c, page);
 		stat(s, CPU_PARTIAL_ALLOC);
+		// 重新回到 redo 分支，这下就可以从 page->freelist 中获取对象了
+        // 并且在 load_freelist 分支中将  page->freelist 更新到 c->freelist 中，page->freelist 设置为 null
+        // 此时 slab cache 中的 cpu 本地缓存 kmem_cache_cpu 的 freelist 以及 page 就变为了 partial 列表中的 slub
 		goto redo;
 	}
 
+	// 流程走到这里表示 slab cache 中的 cpu 本地缓存 partial 列表中也没有 slub 了
+    // 需要近一步降级到 numa node cache —— kmem_cache_node 中的 partial 列表去查找
+    // 如果还是没有，就只能去伙伴系统中申请新的 slub，然后分配对象
+    // 该函数为 slab cache 在慢速路径下分配对象的核心逻辑
 	freelist = new_slab_objects(s, gfpflags, node, &c);
 
 	if (unlikely(!freelist)) {
+		// 如果伙伴系统中无法分配 slub 所需的 page，那么就提示内存不足，分配失败，返回 null
 		slab_out_of_memory(s, gfpflags, node);
 		return NULL;
 	}
 
 	page = c->page;
+	// 此时从 kmem_cache_node->partial 列表中获取的 slub 
+	// 或者从伙伴系统中重新申请的 slub 已经被提升为本地 cpu 缓存了 kmem_cache_cpu->page
+	// 这里需要跳转到 load_freelist 分支，从本地 cpu 缓存 slub 中获取第一个对象返回
 	if (likely(!kmem_cache_debug(s) && pfmemalloc_match(page, gfpflags)))
 		goto load_freelist;
 
@@ -2773,6 +2824,7 @@ static void *__slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
 	void *p;
 	unsigned long flags;
 
+	// 关闭 cpu 中断，防止并发访问
 	local_irq_save(flags);
 #ifdef CONFIG_PREEMPTION
 	/*
@@ -2780,6 +2832,9 @@ static void *__slab_alloc(struct kmem_cache *s, gfp_t gfpflags, int node,
 	 * cpu before disabling interrupts. Need to reload cpu area
 	 * pointer.
 	 */
+	 // 当开启了 CONFIG_PREEMPT，表示允许其他进程抢占当前 cpu
+    // 运行进程的当前 cpu 可能会被其他优先级更高的进程抢占，当前进程可能会被调度到其他 cpu 上
+    // 所以这里需要重新获取 slab cache 的 cpu 本地缓存
 	c = this_cpu_ptr(s->cpu_slab);
 #endif
 
@@ -2812,10 +2867,10 @@ static __always_inline void maybe_wipe_obj_freeptr(struct kmem_cache *s,
 static __always_inline void *slab_alloc_node(struct kmem_cache *s,
 		gfp_t gfpflags, int node, unsigned long addr)
 {
-	void *object;
-	struct kmem_cache_cpu *c;
-	struct page *page;
-	unsigned long tid;
+	void *object; // 用于指向分配成功的对象
+	struct kmem_cache_cpu *c; // slab cache 在当前 cpu 下的本地 cpu 缓存
+	struct page *page; // object 所在的内存页
+	unsigned long tid; // 当前 cpu 编号
 	struct obj_cgroup *objcg = NULL;
 
 	s = slab_pre_alloc_hook(s, &objcg, 1, gfpflags);
@@ -2832,9 +2887,15 @@ redo:
 	 * the same cpu. It could be different if CONFIG_PREEMPTION so we need
 	 * to check if it is matched or not.
 	 */
+	 // slab cache 首先尝试从当前 cpu 本地缓存 kmem_cache_cpu 中获取空闲对象
+    // 这里的 do..while 循环是要保证获取到的 cpu 本地缓存 c 是属于执行进程的当前 cpu
+    // 因为进程可能由于抢占或者中断的原因被调度到其他 cpu 上执行，所需需要确保两者的 tid 是否一致
 	do {
-		tid = this_cpu_read(s->cpu_slab->tid);
-		c = raw_cpu_ptr(s->cpu_slab);
+		tid = this_cpu_read(s->cpu_slab->tid); // 获取执行当前进程的 cpu 中的 tid 字段
+		c = raw_cpu_ptr(s->cpu_slab); // 获取 cpu 本地缓存 cpu_slab
+		// 如果开启了 CONFIG_PREEMPT 表示允许优先级更高的进程抢占当前 cpu
+        // 如果发生抢占，当前进程可能被重新调度到其他 cpu 上运行，所以需要检查此时运行当前进程的 cpu tid 是否与刚才获取的 cpu 本地缓存一致
+        // 如果两者的 tid 字段不一致，说明进程已经被调度到其他 cpu 上了， 需要再次获取正确的 cpu 本地缓存
 	} while (IS_ENABLED(CONFIG_PREEMPTION) &&
 		 unlikely(tid != READ_ONCE(c->tid)));
 
@@ -2858,8 +2919,16 @@ redo:
 	object = c->freelist;
 	page = c->page;
 	if (unlikely(!object || !page || !node_match(page, node))) {
+		// 如果 slab cache 的 cpu 本地缓存中已经没有空闲对象了
+        // 或者 cpu 本地缓存中的 slub 并不属于我们指定的 NUMA 节点
+        // 那么我们就需要进入慢速路径中分配对象:
+        // 1. 检查 kmem_cache_cpu 的 partial 列表中是否有空闲的 slub
+        // 2. 检查 kmem_cache_node 的 partial 列表中是否有空闲的 slub
+        // 3. 如果都没有，则只能重新到伙伴系统中去申请内存页
 		object = __slab_alloc(s, gfpflags, node, addr, c);
 	} else {
+		// 走到该分支表示，slab cache 的 cpu 本地缓存中还有空闲对象，直接分配
+        // 快速路径 fast path 下分配成功，从当前空闲对象中获取下一个空闲对象指针 next_object
 		void *next_object = get_freepointer_safe(s, object);
 
 		/*
@@ -2876,6 +2945,7 @@ redo:
 		 * against code executing on this cpu *not* from access by
 		 * other cpus.
 		 */
+		 // 更新 kmem_cache_cpu 结构中的 freelist 指向 next_object
 		if (unlikely(!this_cpu_cmpxchg_double(
 				s->cpu_slab->freelist, s->cpu_slab->tid,
 				object, tid,
@@ -2884,7 +2954,7 @@ redo:
 			note_cmpxchg_failure("slab_alloc", s, tid);
 			goto redo;
 		}
-		prefetch_freepointer(s, next_object);
+		prefetch_freepointer(s, next_object);  // cpu 预取 next_object 的 freepointer 到 cpu 高速缓存，加快下一次分配对象的速度
 		stat(s, ALLOC_FASTPATH);
 	}
 
