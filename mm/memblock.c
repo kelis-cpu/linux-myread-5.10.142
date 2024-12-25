@@ -31,7 +31,7 @@
 
 /**
  * DOC: memblock overview
- *
+ * memblock内存管理：将所有物理内存放到memblock.memrory中，分配过的内存放到memblock.reserver中，并不从memrory中移除。
  * Memblock is a method of managing memory regions during the early
  * boot period when the usual kernel memory allocators are not up and
  * running.
@@ -162,7 +162,7 @@ static enum memblock_flags __init_memblock choose_memblock_flags(void)
 	return system_has_some_mirror ? MEMBLOCK_MIRROR : MEMBLOCK_NONE;
 }
 
-/* adjust *@size so that (@base + *@size) doesn't overflow, return new size */
+/* adjust *@size so that (@base + *@size) doesn't overflow, return new size，防止size溢出 */
 static inline phys_addr_t memblock_cap_size(phys_addr_t base, phys_addr_t *size)
 {
 	return *size = min(*size, PHYS_ADDR_MAX - base);
@@ -214,6 +214,7 @@ __memblock_find_range_bottom_up(phys_addr_t start, phys_addr_t end,
 	phys_addr_t this_start, this_end, cand;
 	u64 i;
 
+	// 逐一将memblock.memroy里面的内存信息和memblock.reserved的各项信息进行校验，确保this_start,this_end不会是分配过的内存块
 	for_each_free_mem_range(i, nid, flags, &this_start, &this_end, NULL) {
 		this_start = clamp(this_start, start, end);
 		this_end = clamp(this_end, start, end);
@@ -303,7 +304,7 @@ static phys_addr_t __init_memblock memblock_find_in_range_node(phys_addr_t size,
 }
 
 /**
- * memblock_find_in_range - find free area in given range
+ * memblock_find_in_range - find free area in given range，查找给定范围内给定大小的内存区域，内存边界对齐到align字节
  * @start: start of candidate range
  * @end: end of candidate range, can be %MEMBLOCK_ALLOC_ANYWHERE or
  *       %MEMBLOCK_ALLOC_ACCESSIBLE
@@ -336,6 +337,7 @@ again:
 	return ret;
 }
 
+// 移除指定region内存
 static void __init_memblock memblock_remove_region(struct memblock_type *type, unsigned long r)
 {
 	type->total_size -= type->regions[r].size;
@@ -494,7 +496,7 @@ static int __init_memblock memblock_double_array(struct memblock_type *type,
 }
 
 /**
- * memblock_merge_regions - merge neighboring compatible regions
+ * memblock_merge_regions - merge neighboring compatible regions，合并内存区域
  * @type: memblock type to scan
  *
  * Scan @type and merge neighboring compatible regions.
@@ -580,7 +582,7 @@ static int __init_memblock memblock_add_range(struct memblock_type *type,
 	int idx, nr_new;
 	struct memblock_region *rgn;
 
-	if (!size)
+	if (!size) // 给定区域大小为0直接返回
 		return 0;
 
 	/* special case for empty array */
@@ -651,7 +653,7 @@ repeat:
 		insert = true;
 		goto repeat;
 	} else {
-		memblock_merge_regions(type);
+		memblock_merge_regions(type); // 合并相邻内存区域
 		return 0;
 	}
 }
@@ -675,7 +677,7 @@ int __init_memblock memblock_add_node(phys_addr_t base, phys_addr_t size,
 }
 
 /**
- * memblock_add - add new memblock region
+ * memblock_add - add new memblock region,向memrory添加内存区域
  * @base: base address of the new region
  * @size: size of the new region
  *
@@ -777,7 +779,7 @@ static int __init_memblock memblock_remove_range(struct memblock_type *type,
 	int start_rgn, end_rgn;
 	int i, ret;
 
-	ret = memblock_isolate_range(type, base, size, &start_rgn, &end_rgn);
+	ret = memblock_isolate_range(type, base, size, &start_rgn, &end_rgn); // 寻找删除范围内的regions
 	if (ret)
 		return ret;
 
@@ -1347,7 +1349,7 @@ again:
 		found = memblock_find_in_range_node(size, align, start,
 						    end, NUMA_NO_NODE,
 						    flags);
-		if (found && !memblock_reserve(found, size))
+		if (found && !memblock_reserve(found, size)) // 标记该内存块已经分配
 			goto done;
 	}
 
@@ -1897,17 +1899,20 @@ static int __init early_memblock(char *p)
 }
 early_param("memblock", early_memblock);
 
+// @start: 释放内存开始的页帧号
+// @end: 释放内存结束的页帧号
 static void __init __free_pages_memory(unsigned long start, unsigned long end)
 {
 	int order;
 
 	while (start < end) {
+		// ffs：find first bit set
 		order = min(MAX_ORDER - 1UL, __ffs(start));
 
 		while (start + (1UL << order) > end)
 			order--;
 
-		memblock_free_pages(pfn_to_page(start), start, order);
+		memblock_free_pages(pfn_to_page(start), start, order); // order代表伙伴系统中的块大小
 
 		start += (1UL << order);
 	}
@@ -1937,7 +1942,7 @@ static unsigned long __init free_low_memory_core_early(void)
 	memblock_clear_hotplug(0, -1);
 
 	for_each_reserved_mem_range(i, &start, &end)
-		reserve_bootmem_region(start, end);
+		reserve_bootmem_region(start, end); // 遍历reserved类型的regions，对每个region设置页面属性为Reserved
 
 	/*
 	 * We need to use NUMA_NO_NODE instead of NODE_DATA(0)->node_id
@@ -1945,7 +1950,7 @@ static unsigned long __init free_low_memory_core_early(void)
 	 *  low ram will be on Node1
 	 */
 	for_each_free_mem_range(i, NUMA_NO_NODE, MEMBLOCK_NONE, &start, &end,
-				NULL)
+				NULL) // 遍历所有在memrory中，但不在reserve中的regions，然后清Reserved页面属性
 		count += __free_memory_core(start, end);
 
 	return count;
@@ -1985,7 +1990,7 @@ unsigned long __init memblock_free_all(void)
 
 	reset_all_zones_managed_pages();
 
-	pages = free_low_memory_core_early();
+	pages = free_low_memory_core_early(); // 具体释放和移交
 	totalram_pages_add(pages);
 
 	return pages;

@@ -126,6 +126,9 @@ __ref void *alloc_low_pages(unsigned int num)
 	unsigned long pfn;
 	int i;
 
+	/* after_bootmem 变量的默认值为 0，当伙伴系统就绪后，在 mem_init 函数中被修改为 1
+     * 在进行直接映射区页表的构建时，伙伴系统还未就绪，after_bootmem 的值依旧为 0，所以这段代码不会执行
+    */
 	if (after_bootmem) {
 		unsigned int order;
 
@@ -133,6 +136,14 @@ __ref void *alloc_low_pages(unsigned int num)
 		return (void *)__get_free_pages(GFP_ATOMIC | __GFP_ZERO, order);
 	}
 
+	 /*
+     * 在系统初始化时，在堆区（.brk）保留了 INIT_PGT_BUF_SIZE（扩展为 5 个页）的空间作为页表的 buffer
+     * 然后会在 early_alloc_pgt_buf 函数中将 pgt_buf_end 初始化为 buffer 的起始地址  将 pgt_buf_top 初始化为 buffer 的结束地址
+     * 当为页表分配内存时，会优先从该 buffer 中获取，每成功获取一次，pgt_buf_end 都会增加对应的数值
+     * 如果 buffer 中剩余的空间不足以再分配 num 数量的页，或者不能使用堆缓存来分配（由 can_use_brk_pgt 控制），则通过 memblock_find_in_range 函数在 MemBlock 中分配内存，并将分配的内存区域通过 memblock_reserve 函数添加到 MemBlock 分配器的保留区间里。
+     * 如果堆中的页表 buffer 空间充足且允许从 buffer 中分配，则直接从 buffer 中分配空间，此时 pgt_buf_end 需要记录分配后的位置
+     * pfn 指示已分配内存的起始页帧号
+     */
 	if ((pgt_buf_end + num) > pgt_buf_top || !can_use_brk_pgt) {
 		unsigned long ret = 0;
 
@@ -155,7 +166,9 @@ __ref void *alloc_low_pages(unsigned int num)
 		pfn = pgt_buf_end;
 		pgt_buf_end += num;
 	}
-
+	/*
+     * 分配成功后，调用 clear_page 函数，将每个页的内容用 0 来填充
+     */
 	for (i = 0; i < num; i++) {
 		void *adr;
 
@@ -195,10 +208,11 @@ int after_bootmem;
 
 early_param_on_off("gbpages", "nogbpages", direct_gbpages, CONFIG_X86_DIRECT_GBPAGES);
 
+// 映射范围
 struct map_range {
 	unsigned long start;
 	unsigned long end;
-	unsigned page_size_mask;
+	unsigned page_size_mask; // 系统支持的页尺寸掩码
 };
 
 static int page_size_mask;
@@ -385,10 +399,10 @@ static int __meminit split_mem_range(struct map_range *mr, int nr_range,
 	unsigned long pfn;
 	int i;
 
-	limit_pfn = PFN_DOWN(end);
+	limit_pfn = PFN_DOWN(end); // 计算结束物理地址end的页帧
 
 	/* head if not big page alignment ? */
-	pfn = start_pfn = PFN_DOWN(start);
+	pfn = start_pfn = PFN_DOWN(start); // 计算开始物理地址start的页帧
 #ifdef CONFIG_X86_32
 	/*
 	 * Don't use a large page for the first 2/4MB of memory
@@ -401,6 +415,11 @@ static int __meminit split_mem_range(struct map_range *mr, int nr_range,
 	else
 		end_pfn = round_up(pfn, PFN_DOWN(PMD_SIZE));
 #else /* CONFIG_X86_64 */
+	/* 
+     * 此处，end_pfn 表示从起始地址开始的 4KB 页映射区的结束页帧，同时也是 2MB 页映射区的起始页帧 
+     * 宏 PMD_SIZE 表示中层页目录的大小，扩展为 2MB
+     * 通过 round_up 函数将起始页帧 pfn 对齐到 2MB 后，作为第一阶段 4KB 映射区上边界
+     */
 	end_pfn = round_up(pfn, PFN_DOWN(PMD_SIZE));
 #endif
 	if (end_pfn > limit_pfn)
@@ -428,7 +447,7 @@ static int __meminit split_mem_range(struct map_range *mr, int nr_range,
 
 #ifdef CONFIG_X86_64
 	/* big page (1G) range */
-	start_pfn = round_up(pfn, PFN_DOWN(PUD_SIZE));
+	start_pfn = round_up(pfn, PFN_DOWN(PUD_SIZE)); // pud_size:1G
 	end_pfn = round_down(limit_pfn, PFN_DOWN(PUD_SIZE));
 	if (start_pfn < end_pfn) {
 		nr_range = save_mr(mr, nr_range, start_pfn, end_pfn,
@@ -469,6 +488,12 @@ static int __meminit split_mem_range(struct map_range *mr, int nr_range,
 		nr_range--;
 	}
 
+	/*  
+     * 最后，打印出每个内存区间的信息：
+     * 1、起始地址
+     * 2、结束地址
+     * 3、页大小： 1G、2M 或者 4K
+     */
 	for (i = 0; i < nr_range; i++)
 		pr_debug(" [mem %#010lx-%#010lx] page %s\n",
 				mr[i].start, mr[i].end - 1,
@@ -513,7 +538,7 @@ bool pfn_range_is_mapped(unsigned long start_pfn, unsigned long end_pfn)
 unsigned long __ref init_memory_mapping(unsigned long start,
 					unsigned long end, pgprot_t prot)
 {
-	struct map_range mr[NR_RANGE_MR];
+	struct map_range mr[NR_RANGE_MR]; // NR_RANGE_MR：5
 	unsigned long ret = 0;
 	int nr_range, i;
 
@@ -521,14 +546,14 @@ unsigned long __ref init_memory_mapping(unsigned long start,
 	       start, end - 1);
 
 	memset(mr, 0, sizeof(mr));
-	nr_range = split_mem_range(mr, 0, start, end);
+	nr_range = split_mem_range(mr, 0, start, end); // 将内存区域根据可映射的页大小切分成不同的区间
 
 	for (i = 0; i < nr_range; i++)
 		ret = kernel_physical_mapping_init(mr[i].start, mr[i].end,
 						   mr[i].page_size_mask,
-						   prot);
+						   prot); // 将指定的物理内存区间，映射到直接映射区，返回映射的最大物理地址。
 
-	add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT);
+	add_pfn_range_mapped(start >> PAGE_SHIFT, ret >> PAGE_SHIFT); // 将已映射内存区间的页帧号保存起来
 
 	return ret >> PAGE_SHIFT;
 }
@@ -613,10 +638,15 @@ static void __init memory_map_top_down(unsigned long map_start,
 
 	/* xen has big range in reserved near end of ram, skip it at first.*/
 	addr = memblock_find_in_range(map_start, map_end, PMD_SIZE, PMD_SIZE);
-	real_end = addr + PMD_SIZE;
+	real_end = addr + PMD_SIZE; // PMD_SIZE=2MB
 
 	/* step_size need to be small so pgt_buf from BRK could cover it */
-	step_size = PMD_SIZE;
+	step_size = PMD_SIZE; // 每次映射内存的大小
+	/*
+	 * max_pfn_mapped 表示已经映射的最大页帧号，初始化为 0，每次映射后都会更新
+     * min_pfn_mapped 表示已经映射的最小页帧号，同样每次映射后都会更新
+     * start 表示当前映射的起始地址，last_start 表示当前映射的内存区间的结束地址，也是下一次映射的起始地址，同样每次映射后都会更新
+    */
 	max_pfn_mapped = 0; /* will get exact value next */
 	min_pfn_mapped = real_end >> PAGE_SHIFT;
 	last_start = start = real_end;
@@ -628,6 +658,10 @@ static void __init memory_map_top_down(unsigned long map_start,
 	 * for page table.
 	 */
 	while (last_start > map_start) {
+		/*
+         * 计算 start 的值，要求对齐到 step_size
+         * 如果剩余空间不足 step_size，说明到边界了，则将 start 设置为 ISA_END_ADDRESS
+         */
 		if (last_start > step_size) {
 			start = round_down(last_start - 1, step_size);
 			if (start < map_start)
@@ -642,6 +676,12 @@ static void __init memory_map_top_down(unsigned long map_start,
 			step_size = get_new_step_size(step_size);
 	}
 
+	/*
+     * map_end 是最大可用物理内存地址，real_end 是已经映射的最大地址
+     * 因为 real_end 是通过 memblock_find_in_range 函数找到的一段 2MB 连续内存的结束地址，并且还要对齐到 2MB，
+     * 所以 real_end 可能会比 end 小，导致 real_end ~ map_end 之间的内存没有映射
+     * 这种情况下，需要将这段内存空间也映射上
+     */
 	if (real_end < map_end)
 		init_range_memory_mapping(real_end, map_end);
 }
@@ -715,18 +755,23 @@ static void __init init_trampoline(void)
 
 void __init init_mem_mapping(void)
 {
-	unsigned long end;
+	unsigned long end; // 物理内存的最大页帧号
 
 	pti_check_boottime_disable();
-	probe_page_size_mask();
+	probe_page_size_mask(); // 探测页大小是否支持2MB、1GB，存在位图page_size_mask中
 	setup_pcid();
 
 #ifdef CONFIG_X86_64
-	end = max_pfn << PAGE_SHIFT;
+	end = max_pfn << PAGE_SHIFT; // 系统物理内存最大页帧号
 #else
-	end = max_low_pfn << PAGE_SHIFT;
+	end = max_low_pfn << PAGE_SHIFT; // 32位系统所能寻址的最大页帧号
 #endif
 
+	/* 
+     * 为 ISA （Industry Standard Architecture）区间（0 ~ 1MB）创建直接映射
+     * ISA_END_ADDRESS 表示 ISA 区间的结束地址，扩展为 1MB
+     * #define ISA_END_ADDRESS		0x100000
+     */
 	/* the ISA range is always mapped regardless of memory holes */
 	init_memory_mapping(0, ISA_END_ADDRESS, PAGE_KERNEL);
 

@@ -3539,6 +3539,7 @@ out_release:
  * We enter with non-exclusive mmap_lock (to exclude vma changes,
  * but allow concurrent faults), and pte mapped but not yet locked.
  * We return with mmap_lock still held, but pte unmapped and unlocked.
+ * 完成了 struct anon_vma 结构和 struct anon_vma_chain 结构的创建以及相关匿名页反向映射数据结构的相互关联
  */
 static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 {
@@ -3593,7 +3594,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	/* Allocate our own private page. */
 	if (unlikely(anon_vma_prepare(vma)))
 		goto oom;
-	page = alloc_zeroed_user_highpage_movable(vma, vmf->address);
+	page = alloc_zeroed_user_highpage_movable(vma, vmf->address); // 从伙伴系统中申请一个匿名页
 	if (!page)
 		goto oom;
 
@@ -3632,7 +3633,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	}
 
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
-	page_add_new_anon_rmap(page, vma, vmf->address, false);
+	page_add_new_anon_rmap(page, vma, vmf->address, false); // 建立反向映射关系
 	lru_cache_add_inactive_or_unevictable(page, vma);
 setpte:
 	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
@@ -4453,9 +4454,9 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 
 	if (!vmf->pte) {
 		if (vma_is_anonymous(vmf->vma))
-			return do_anonymous_page(vmf);
+			return do_anonymous_page(vmf); // 处理匿名页缺页
 		else
-			return do_fault(vmf);
+			return do_fault(vmf); // 处理文件页缺页
 	}
 
 	if (!pte_present(vmf->orig_pte))
@@ -4473,7 +4474,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 	if (vmf->flags & FAULT_FLAG_WRITE) {
 		if (!pte_write(entry))
-			return do_wp_page(vmf);
+			return do_wp_page(vmf); // 子进程缺页处理
 		entry = pte_mkdirty(entry);
 	}
 	entry = pte_mkyoung(entry);

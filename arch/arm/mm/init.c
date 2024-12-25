@@ -398,20 +398,20 @@ void __init mem_init(void)
 		swiotlb_force = SWIOTLB_NO_FORCE;
 #endif
 
-	set_max_mapnr(pfn_to_page(max_pfn) - mem_map);
+	set_max_mapnr(pfn_to_page(max_pfn) - mem_map); // 配置页表最大数量
 
 	/* this will put all unused low memory onto the freelists */
-	free_unused_memmap();
-	memblock_free_all();
+	free_unused_memmap(); // 释放memblock中的unmap内存
+	memblock_free_all(); // 释放memblock中未使用的pages到buddy
 
 #ifdef CONFIG_SA1111
 	/* now that our DMA memory is actually so designated, we can free it */
 	free_reserved_area(__va(PHYS_OFFSET), swapper_pg_dir, -1, NULL);
 #endif
 
-	free_highpages();
+	free_highpages(); // 定义CONFIG_HIGHMEM才会使用到，释放HIGMEM到buddy
 
-	mem_init_print_info(NULL);
+	mem_init_print_info(NULL); // 打印内存分布信息
 
 	/*
 	 * Check boundaries twice: Some fundamental inconsistencies can

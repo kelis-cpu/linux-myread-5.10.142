@@ -1008,7 +1008,7 @@ out_free_interp:
 	if (!(current->personality & ADDR_NO_RANDOMIZE) && randomize_va_space)
 		current->flags |= PF_RANDOMIZE;
 
-	setup_new_exec(bprm);
+	setup_new_exec(bprm);   // 设置虚拟内存空间中的内存映射区域起始地址 mmap_base
 
 	/* Do this so that we can load the interpreter, if need be.  We will
 	   change some of these later */

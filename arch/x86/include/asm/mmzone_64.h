@@ -12,7 +12,7 @@
 
 extern struct pglist_data *node_data[];
 
-#define NODE_DATA(nid)		(node_data[nid])
+#define NODE_DATA(nid)		(node_data[nid]) // 查找node_id得节点pg_data_t信息
 
 #endif
 #endif /* _ASM_X86_MMZONE_64_H */

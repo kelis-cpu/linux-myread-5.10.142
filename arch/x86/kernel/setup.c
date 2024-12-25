@@ -195,6 +195,7 @@ static inline void __init copy_edd(void)
 }
 #endif
 
+// 用于在堆内分配指定大小的内存并进行边界对齐
 void * __init extend_brk(size_t size, size_t align)
 {
 	size_t mask = align - 1;
@@ -203,9 +204,16 @@ void * __init extend_brk(size_t size, size_t align)
 	BUG_ON(_brk_start == 0);
 	BUG_ON(align & mask);
 
-	_brk_end = (_brk_end + mask) & ~mask;
+	_brk_end = (_brk_end + mask) & ~mask; 
+	/*
+     * _brk_end 指示堆中已分配内存的结束地址，此处将 _brk_end 向上圆整对齐到 align
+    */
 	BUG_ON((char *)(_brk_end + size) > __brk_limit);
 
+	/*
+     * ret 指示新分配的堆空间的起始地址
+     * _brk_end 指示分配后的结束地址，也是下一次分配的起始地址
+     */
 	ret = (void *)_brk_end;
 	_brk_end += size;
 
@@ -1067,12 +1075,12 @@ void __init setup_arch(char **cmdline_p)
 	 *  it could use memblock_find_in_range, could overlap with
 	 *  brk area.
 	 */
-	reserve_brk();
+	reserve_brk(); // 扩展brk
 
 	cleanup_highmap();
 
 	memblock_set_current_limit(ISA_END_ADDRESS);
-	e820__memblock_setup();
+	e820__memblock_setup(); // 初始化memblock，int 15探测内存信息后，存放到e820中，根据e820信息初始化memblock
 
 	reserve_bios_regions();
 
@@ -1104,7 +1112,7 @@ void __init setup_arch(char **cmdline_p)
 	trim_platform_memory_ranges();
 	trim_low_memory_range();
 
-	init_mem_mapping();
+	init_mem_mapping(); // 设置内核页表
 
 	idt_setup_early_pf();
 

@@ -328,9 +328,9 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	if (!efi_enabled(EFI_BOOT) && ((u64)_text % MIN_KIMG_ALIGN) != 0)
 	     pr_warn(FW_BUG "Kernel image misaligned at boot, please fix your bootloader!");
 
-	arm64_memblock_init();
+	arm64_memblock_init(); // 初始化memblock
 
-	paging_init();
+	paging_init(); // 分页机制初始化
 
 	acpi_table_upgrade();
 
@@ -340,7 +340,7 @@ void __init __no_sanitize_address setup_arch(char **cmdline_p)
 	if (acpi_disabled)
 		unflatten_device_tree();
 
-	bootmem_init();
+	bootmem_init(); // 内存管理初始化
 
 	kasan_init();
 

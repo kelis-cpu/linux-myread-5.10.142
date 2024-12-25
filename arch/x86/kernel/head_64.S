@@ -40,7 +40,7 @@
  * because we need identity-mapped pages.
  */
 #define l4_index(x)	(((x) >> 39) & 511)
-#define pud_index(x)	(((x) >> PUD_SHIFT) & (PTRS_PER_PUD-1))
+#define pud_index(x)	(((x) >> PUD_SHIFT) & (PTRS_PER_PUD-1)) // 获取虚拟地址对应的上层页目录项索引
 
 L4_PAGE_OFFSET = l4_index(__PAGE_OFFSET_BASE_L4)
 L4_START_KERNEL = l4_index(__START_KERNEL_map)

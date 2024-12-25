@@ -33,7 +33,7 @@
 enum slab_state slab_state;
 LIST_HEAD(slab_caches);
 DEFINE_MUTEX(slab_mutex);
-struct kmem_cache *kmem_cache;
+struct kmem_cache *kmem_cache; // 全局变量，用于专门管理 kmem_cache 对象的 slab cache
 
 #ifdef CONFIG_HARDENED_USERCOPY
 bool usercopy_fallback __ro_after_init =
@@ -87,6 +87,7 @@ EXPORT_SYMBOL(kmem_cache_size);
 #ifdef CONFIG_DEBUG_VM
 static int kmem_cache_sanity_check(const char *name, unsigned int size)
 {
+	// 创建 slab cache 的过程不能处在中断上下文中
 	if (!name || in_interrupt() || size > KMALLOC_MAX_SIZE) {
 		pr_err("kmem_cache_create(%s) integrity check failed\n", name);
 		return -EINVAL;
@@ -133,6 +134,8 @@ int __kmem_cache_alloc_bulk(struct kmem_cache *s, gfp_t flags, size_t nr,
  * Figure out what the alignment of the objects will be given a set of
  * flags, a user specified alignment and the size of the objects.
  */
+// 内核并不会完全按照我们指定的 align 进行内存对齐，而是会综合考虑 cpu 硬件 cache line 的大小，以及 word size 计算出一个合理的 align 值。
+// 内核在对 slab 对象进行内存布局的时候，会按照这个最终的 align 进行内存对齐。
 static unsigned int calculate_alignment(slab_flags_t flags,
 		unsigned int align, unsigned int size)
 {
@@ -143,6 +146,7 @@ static unsigned int calculate_alignment(slab_flags_t flags,
 	 * The hardware cache alignment cannot override the specified
 	 * alignment though. If that is greater then use it.
 	 */
+	 // SLAB_HWCACHE_ALIGN 表示需要按照硬件 cache line 对齐
 	if (flags & SLAB_HWCACHE_ALIGN) {
 		unsigned int ralign;
 
@@ -152,7 +156,7 @@ static unsigned int calculate_alignment(slab_flags_t flags,
 		align = max(align, ralign);
 	}
 
-	if (align < ARCH_SLAB_MINALIGN)
+	if (align < ARCH_SLAB_MINALIGN) // ARCH_SLAB_MINALIGN 为 slab 设置的最小对齐参数， 8 字节大小，align 不能小于该值
 		align = ARCH_SLAB_MINALIGN;
 
 	return ALIGN(align, sizeof(void *));
@@ -181,6 +185,7 @@ int slab_unmergeable(struct kmem_cache *s)
 	return 0;
 }
 
+// 查找可被复用的slab cache
 struct kmem_cache *find_mergeable(unsigned int size, unsigned int align,
 		slab_flags_t flags, const char *name, void (*ctor)(void *))
 {
@@ -200,6 +205,7 @@ struct kmem_cache *find_mergeable(unsigned int size, unsigned int align,
 	if (flags & SLAB_NEVER_MERGE)
 		return NULL;
 
+	// 开始遍历内核中已有的 slab cache，寻找可以合并的 slab cache
 	list_for_each_entry_reverse(s, &slab_caches, list) {
 		if (slab_unmergeable(s))
 			continue;
@@ -241,10 +247,14 @@ static struct kmem_cache *create_cache(const char *name,
 		useroffset = usersize = 0;
 
 	err = -ENOMEM;
+	// 为将要创建的 slab cache 分配 kmem_cache 结构
+    // kmem_cache 也是内核的一个核心数据结构，同样也会被它对应的 slab cache 所管理
+	// 内核在启动阶段，会专门为 struct kmem_cache 创建其专属的 slab cache，保存在全局变量 kmem_cache 中
+    // 这里就是从 kmem_cache 所属的 slab cache 中拿出一个 kmem_cache 对象出来
 	s = kmem_cache_zalloc(kmem_cache, GFP_KERNEL);
 	if (!s)
 		goto out;
-
+	// 利用我们指定的创建参数初始化 kmem_cache 结构
 	s->name = name;
 	s->size = s->object_size = object_size;
 	s->align = align;
@@ -252,12 +262,14 @@ static struct kmem_cache *create_cache(const char *name,
 	s->useroffset = useroffset;
 	s->usersize = usersize;
 
+	// 创建 slab cache 的核心函数，这里会初始化 kmem_cache 结构中的其他重要属性
+    // 包括创建初始化 kmem_cache_cpu 和 kmem_cache_node 结构
 	err = __kmem_cache_create(s, flags);
 	if (err)
 		goto out_free_cache;
 
-	s->refcount = 1;
-	list_add(&s->list, &slab_caches);
+	s->refcount = 1; // slab cache 初始状态下，引用计数为 1
+	list_add(&s->list, &slab_caches); // 将刚刚创建出来的 slab cache 加入到 slab cache 在内核中的全局链表管理
 out:
 	if (err)
 		return ERR_PTR(err);
@@ -271,6 +283,8 @@ out_free_cache:
 /**
  * kmem_cache_create_usercopy - Create a cache with a region suitable
  * for copying to userspace
+ * 内核提供 kmem_cache_create_usercopy 函数的目的其实是为了防止 slab cache 中管理的内核核心对象被泄露，
+ * 通过 useroffset 和 usersize 两个变量来指定内核对象内存布局区域中 useroffset 到 usersize 的这段内存区域可以被复制到用户空间中，其他区域则不可以。
  * @name: A string which is used in /proc/slabinfo to identify this cache.
  * @size: The size of objects to be created in this cache.
  * @align: The required alignment for the objects.
@@ -307,17 +321,18 @@ kmem_cache_create_usercopy(const char *name,
 	const char *cache_name;
 	int err;
 
-	get_online_cpus();
-	get_online_mems();
+	get_online_cpus();  // 获取 cpu_hotplug_lock，防止 cpu 热插拔改变 online cpu map
+	get_online_mems(); // 获取 mem_hotplug_lock，防止访问内存的时候进行内存热插拔
 
-	mutex_lock(&slab_mutex);
+	mutex_lock(&slab_mutex); // 获取 slab cache 链表的全局互斥锁
 
-	err = kmem_cache_sanity_check(name, size);
+	err = kmem_cache_sanity_check(name, size); // 入参检查，校验 name 和 size 的有效性，防止创建过程在中断上下文中进行
 	if (err) {
 		goto out_unlock;
 	}
 
 	/* Refuse requests with allocator specific flags */
+	 // 检查有效的 slab flags 标记位，如果传入的 flag 是无效的，则拒绝本次创建请求
 	if (flags & ~SLAB_FLAGS_PERMITTED) {
 		err = -EINVAL;
 		goto out_unlock;
@@ -329,24 +344,37 @@ kmem_cache_create_usercopy(const char *name,
 	 * case, and we'll just provide them with a sanitized version of the
 	 * passed flags.
 	 */
-	flags &= CACHE_CREATE_MASK;
+	flags &= CACHE_CREATE_MASK; // 设置创建 slab  cache 时用到的一些标志位
 
 	/* Fail closed on bad usersize of useroffset values. */
+	// 校验 useroffset 和 usersize 的有效性
 	if (WARN_ON(!usersize && useroffset) ||
 	    WARN_ON(size < usersize || size - usersize < useroffset))
 		usersize = useroffset = 0;
 
+	/*
+		一个可以被复用的 slab cache 需要满足以下四个条件：
+		指定的 slab_flags_t 相同。
+		指定对象的 object size 要小于等于已有 slab cache 中的对象 size （kmem_cache->size）。
+		如果指定对象的 object size 与已有 kmem_cache->size 不相同，那么它们之间的差值需要再一个 word size 之内。
+		已有 slab cache 中的 slab 对象对齐 align （kmem_cache->align）要大于等于指定的 align 并且可以整除 align 。
+	*/
 	if (!usersize)
+		// 在全局 slab cache 链表中查找与当前创建参数相匹配的 kmem_cache
+        // 如果有，就不需要创建新的了，直接和已有的  slab cache  合并
+        // 并且在 sys 文件系统中使用指定的 name 作为已有  slab cache  的别名
 		s = __kmem_cache_alias(name, size, align, flags, ctor);
 	if (s)
 		goto out_unlock;
 
+	// 在内核中为指定的 name 生成字符串常量并分配内存
+    // 这里的 cache_name 就是将要创建的 slab cache 名称，用于在 /proc/slabinfo 中显示
 	cache_name = kstrdup_const(name, GFP_KERNEL);
 	if (!cache_name) {
 		err = -ENOMEM;
 		goto out_unlock;
 	}
-
+	// / 按照我们指定的参数，创建新的 slab cache
 	s = create_cache(cache_name, size,
 			 calculate_alignment(flags, align, size),
 			 flags, useroffset, usersize, ctor, NULL);
@@ -401,6 +429,7 @@ EXPORT_SYMBOL(kmem_cache_create_usercopy);
  *
  * Return: a pointer to the cache on success, NULL on failure.
  */
+//  内核创建 slab cache 的接口函数
 struct kmem_cache *
 kmem_cache_create(const char *name, unsigned int size, unsigned int align,
 		slab_flags_t flags, void (*ctor)(void *))

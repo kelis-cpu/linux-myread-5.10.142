@@ -41,13 +41,15 @@ enum stat_item {
 
 struct kmem_cache_cpu {
 	void **freelist;	/* Pointer to next available object */
-	unsigned long tid;	/* Globally unique transaction id */
-	struct page *page;	/* The slab from which we are allocating */
+	unsigned long tid;	/* Globally unique transaction id */ //为了保证进程在 slab cache 中获取到的 cpu 本地缓存 kmem_cache_cpu 与当前执行进程的 cpu 是一致的。
+	struct page *page;	/* The slab from which we are allocating */ // slab cache 中 CPU 本地所缓存的 slab，由于 slab 底层的存储结构是内存页 page
 #ifdef CONFIG_SLUB_CPU_PARTIAL
+	// cpu cache 缓存的备用 slab 列表，同样也是用 page 表示
+    // 当被本地 cpu 缓存的 slab 中没有空闲对象时，内核会从 partial 列表中的 slab 中查找空闲对象
 	struct page *partial;	/* Partially allocated frozen slabs */
 #endif
 #ifdef CONFIG_SLUB_STATS
-	unsigned stat[NR_SLUB_STAT_ITEMS];
+	unsigned stat[NR_SLUB_STAT_ITEMS]; // 记录 slab 分配对象的一些状态信息
 #endif
 };
 
@@ -81,23 +83,26 @@ struct kmem_cache_order_objects {
  * Slab cache management.
  */
 struct kmem_cache {
+	// 每个 cpu 拥有一个本地缓存，用于无锁化快速分配释放对象
 	struct kmem_cache_cpu __percpu *cpu_slab;
 	/* Used for retrieving partial slabs, etc. */
 	slab_flags_t flags;
-	unsigned long min_partial;
+	unsigned long min_partial; // 控制 NUMA 节点缓存 partial 列表 slab 个数，如果超过该值，那么列表中空闲的 empty slab 就会被释放回伙伴系统中。
 	unsigned int size;	/* The size of an object including metadata */
 	unsigned int object_size;/* The size of an object without metadata */
 	struct reciprocal_value reciprocal_size;
 	unsigned int offset;	/* Free pointer offset */
 #ifdef CONFIG_SLUB_CPU_PARTIAL
 	/* Number of per cpu partial objects to keep around */
-	unsigned int cpu_partial;
+	unsigned int cpu_partial; // 限定 slab cache 在每个 cpu 本地缓存 partial 链表中所有 slab 中空闲对象的总数
+    // cpu 本地缓存 partial 链表中空闲对象的数量超过该值，则会将 cpu 本地缓存 partial 链表中的所有 slab 转移到 numa node 缓存中。
 #endif
-	struct kmem_cache_order_objects oo;
+	struct kmem_cache_order_objects oo; // 表示 cache 中的 slab 大小，包括 slab 所申请的页面个数，以及所包含的对象个数
+    // 其中低 16 位表示一个 slab 中所包含的对象总数，高 16 位表示一个 slab 所占有的内存页个数。
 
 	/* Allocation and freeing of slabs */
 	struct kmem_cache_order_objects max;
-	struct kmem_cache_order_objects min;
+	struct kmem_cache_order_objects min; // 当按照 oo 的尺寸为 slab 申请内存时，如果内存紧张，会采用 min 的尺寸为 slab 申请内存，可以容纳一个对象即可
 	gfp_t allocflags;	/* gfp flags to use on each alloc */
 	int refcount;		/* Refcount for slab cache destroy */
 	void (*ctor)(void *);
@@ -105,7 +110,7 @@ struct kmem_cache {
 	unsigned int align;		/* Alignment */
 	unsigned int red_left_pad;	/* Left redzone padding size */
 	const char *name;	/* Name (only for display!) */
-	struct list_head list;	/* List of slab caches */
+	struct list_head list;	/* List of slab caches */ // 组织串联系统中所有类型的slab cache
 #ifdef CONFIG_SYSFS
 	struct kobject kobj;	/* For sysfs */
 #endif
@@ -131,7 +136,7 @@ struct kmem_cache {
 	unsigned int useroffset;	/* Usercopy region offset */
 	unsigned int usersize;		/* Usercopy region size */
 
-	struct kmem_cache_node *node[MAX_NUMNODES];
+	struct kmem_cache_node *node[MAX_NUMNODES]; // slab cache 中 numa node 中的缓存，每个 node 一个
 };
 
 #ifdef CONFIG_SLUB_CPU_PARTIAL

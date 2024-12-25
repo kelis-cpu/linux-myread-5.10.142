@@ -345,7 +345,7 @@ int __init e820__update_table(struct e820_table *table)
 		change_point[i] = &change_point_list[i];
 
 	/*
-	 * Record all known change-points (starting and ending addresses),
+	 * Record all known change-points (starting and ending addresses),一个e820_entry由两个change_member表述
 	 * omitting empty memory regions:
 	 */
 	chg_idx = 0;
@@ -825,7 +825,7 @@ u64 __init e820__memblock_alloc_reserved(u64 size, u64 align)
 #endif
 
 /*
- * Find the highest page frame number we have available
+ * Find the highest page frame number we have available 找出最高可用页面号
  */
 static unsigned long __init e820_end_pfn(unsigned long limit_pfn, enum e820_type type)
 {
@@ -1267,6 +1267,7 @@ char *__init e820__memory_setup_default(void)
 	 * Otherwise fake a memory map; one section from 0k->640k,
 	 * the next section from 1mb->appropriate_mem_k
 	 */
+	 // 将boot_params.e820t_table拷贝到全局e820_table
 	if (append_e820_table(boot_params.e820_table, boot_params.e820_entries) < 0) {
 		u64 mem_size;
 
@@ -1285,7 +1286,7 @@ char *__init e820__memory_setup_default(void)
 	}
 
 	/* We just appended a lot of ranges, sanitize the table: */
-	e820__update_table(e820_table);
+	e820__update_table(e820_table); // 按照type区分，并且排序的数组，对应物理内存的区间及属性
 
 	return who;
 }

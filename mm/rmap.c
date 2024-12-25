@@ -146,10 +146,10 @@ static void anon_vma_chain_link(struct vm_area_struct *vma,
 				struct anon_vma_chain *avc,
 				struct anon_vma *anon_vma)
 {
-	avc->vma = vma;
+	avc->vma = vma; // 通过 anon_vma_chain 关联 anon_vma 和对应的 vm_area_struct
 	avc->anon_vma = anon_vma;
-	list_add(&avc->same_vma, &vma->anon_vma_chain);
-	anon_vma_interval_tree_insert(avc, &anon_vma->rb_root);
+	list_add(&avc->same_vma, &vma->anon_vma_chain); // 将 vm_area_struct 中的 anon_vma_chain 链表加入到 anon_vma_chain 中的 same_vma 链表中
+	anon_vma_interval_tree_insert(avc, &anon_vma->rb_root); // 将初始化好的 anon_vma_chain 加入到 anon_vma 管理的红黑树 rb_root 中
 }
 
 /**
@@ -182,20 +182,20 @@ static void anon_vma_chain_link(struct vm_area_struct *vma,
  */
 int __anon_vma_prepare(struct vm_area_struct *vma)
 {
-	struct mm_struct *mm = vma->vm_mm;
-	struct anon_vma *anon_vma, *allocated;
+	struct mm_struct *mm = vma->vm_mm; // 获取进程虚拟内存空间
+	struct anon_vma *anon_vma, *allocated;  // 准备为匿名页分配 anon_vma 以及 anon_vma_chain
 	struct anon_vma_chain *avc;
 
 	might_sleep();
 
-	avc = anon_vma_chain_alloc(GFP_KERNEL);
+	avc = anon_vma_chain_alloc(GFP_KERNEL);  // 分配 anon_vma_chain 实例
 	if (!avc)
 		goto out_enomem;
 
-	anon_vma = find_mergeable_anon_vma(vma);
+	anon_vma = find_mergeable_anon_vma(vma); // 在相邻的虚拟内存区域 VMA 中查找可复用的 anon_vma
 	allocated = NULL;
 	if (!anon_vma) {
-		anon_vma = anon_vma_alloc();
+		anon_vma = anon_vma_alloc();  // 没有可复用的 anon_vma 则创建一个新的实例
 		if (unlikely(!anon_vma))
 			goto out_enomem_free_avc;
 		anon_vma->num_children++; /* self-parent link for new root */
@@ -206,8 +206,8 @@ int __anon_vma_prepare(struct vm_area_struct *vma)
 	/* page_table_lock to protect against threads */
 	spin_lock(&mm->page_table_lock);
 	if (likely(!vma->anon_vma)) {
-		vma->anon_vma = anon_vma;
-		anon_vma_chain_link(vma, avc, anon_vma);
+		vma->anon_vma = anon_vma; // VMA 中的 anon_vma 属性就是在这里赋值的
+		anon_vma_chain_link(vma, avc, anon_vma); // 建立反向映射关联
 		anon_vma->num_active_vmas++;
 		allocated = NULL;
 		avc = NULL;
@@ -1054,9 +1054,9 @@ static void __page_set_anon_rmap(struct page *page,
 	if (!exclusive)
 		anon_vma = anon_vma->root;
 
-	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON;
-	page->mapping = (struct address_space *) anon_vma;
-	page->index = linear_page_index(vma, address);
+	anon_vma = (void *) anon_vma + PAGE_MAPPING_ANON; // 低位置 1
+	page->mapping = (struct address_space *) anon_vma;     // 转换为 address_space 指针赋值给 page 结构中的 mapping 字段
+	page->index = linear_page_index(vma, address); // page 结构中的 index 表示该匿名页在虚拟内存区域 vma 中的偏移
 }
 
 /**

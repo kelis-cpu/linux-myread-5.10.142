@@ -78,8 +78,8 @@ struct anon_vma {
  * which link all the VMAs associated with this anon_vma.
  */
 struct anon_vma_chain {
-	struct vm_area_struct *vma;
-	struct anon_vma *anon_vma;
+	struct vm_area_struct *vma; // 匿名页关联的进程虚拟内存空间（vma属于一个特定的进程，多个进程多个vma）
+	struct anon_vma *anon_vma; // 匿名页 page 指向的 anon_vma
 	struct list_head same_vma;   /* locked by mmap_lock & page_table_lock */
 	struct rb_node rb;			/* locked by anon_vma->rwsem */
 	unsigned long rb_subtree_last;

@@ -48,7 +48,7 @@ enum e820_type {
 
 /*
  * A single E820 map entry, describing a memory range of [addr...addr+size-1],
- * of 'type' memory type:
+ * of 'type' memory type: // 描述一段地址连续得物理内存空间，如果一片连续的物理内存空间，一段是RAM，一段是ROM，需要分为两段。
  *
  * (We pack it because there can be thousands of them on large systems.)
  */

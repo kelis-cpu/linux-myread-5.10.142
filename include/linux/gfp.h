@@ -19,25 +19,25 @@ struct vm_area_struct;
 #define ___GFP_DMA		0x01u
 #define ___GFP_HIGHMEM		0x02u
 #define ___GFP_DMA32		0x04u
-#define ___GFP_MOVABLE		0x08u
-#define ___GFP_RECLAIMABLE	0x10u
-#define ___GFP_HIGH		0x20u
-#define ___GFP_IO		0x40u
+#define ___GFP_MOVABLE		0x08u // 用于指定分配的页面是可以移动的
+#define ___GFP_RECLAIMABLE	0x10u // 指定分配的页面是可以回收的
+#define ___GFP_HIGH		0x20u // 该内存分配请求是高优先级的，内核急切的需要内存，如果内存分配失败则会给系统带来非常严重的后果，设置该标志通常内存是不允许分配失败的，如果空闲内存不足，则会从紧急预留内存中分配。
+#define ___GFP_IO		0x40u // 内核在分配物理内存的时候可以发起磁盘 IO 操作
 #define ___GFP_FS		0x80u
-#define ___GFP_ZERO		0x100u
-#define ___GFP_ATOMIC		0x200u
-#define ___GFP_DIRECT_RECLAIM	0x400u
-#define ___GFP_KSWAPD_RECLAIM	0x800u
+#define ___GFP_ZERO		0x100u // 在内核分配内存成功之后，将内存页初始化填充字节 0
+#define ___GFP_ATOMIC		0x200u // 表示内存在分配物理内存的时候不允许睡眠必须是原子性地进行内存分配
+#define ___GFP_DIRECT_RECLAIM	0x400u // 内核在进行内存分配的时候，可以进行直接内存回收。
+#define ___GFP_KSWAPD_RECLAIM	0x800u // 表示内核在分配内存的时候，如果剩余内存容量在 _watermark[WMARK_MIN] 与 _watermark[WMARK_LOW] 之间时，内核就会唤醒 kswapd 进程开始异步内存回收，直到剩余内存高于 _watermark[WMARK_HIGH] 为止。
 #define ___GFP_WRITE		0x1000u
-#define ___GFP_NOWARN		0x2000u
-#define ___GFP_RETRY_MAYFAIL	0x4000u
-#define ___GFP_NOFAIL		0x8000u
+#define ___GFP_NOWARN		0x2000u // 表示当内核分配内存失败时，抑制内核的分配失败错误报告
+#define ___GFP_RETRY_MAYFAIL	0x4000u // 在内核分配内存失败的时候，允许重试，但重试仍然可能失败，重试若干次后停止。与其对应的是 ___GFP_NORETRY 标志表示分配内存失败时不允许重试。
+#define ___GFP_NOFAIL		0x8000u // 在内核分配失败时一直重试直到成功为止
 #define ___GFP_NORETRY		0x10000u
-#define ___GFP_MEMALLOC		0x20000u
+#define ___GFP_MEMALLOC		0x20000u // 允许内核在分配内存时可以从所有内存区域中获取内存，包括从紧急预留内存中获取
 #define ___GFP_COMP		0x40000u
-#define ___GFP_NOMEMALLOC	0x80000u
-#define ___GFP_HARDWALL		0x100000u
-#define ___GFP_THISNODE		0x200000u
+#define ___GFP_NOMEMALLOC	0x80000u // 标志用于明确禁止内核从紧急预留内存中获取内存。___GFP_NOMEMALLOC 标识的优先级要高于 ___GFP_MEMALLOC
+#define ___GFP_HARDWALL		0x100000u // 该标志限制了内核分配内存的行为只能在当前进程分配到的 CPU 所关联的 NUMA 节点上进行分配，当进程可以运行的 CPU 受限时，该标志才会有意义，如果进程允许在所有 CPU 上运行则该标志没有意义。
+#define ___GFP_THISNODE		0x200000u // 该标志限制了内核分配内存的行为只能在当前 NUMA 节点或者在指定 NUMA 节点中分配内存，如果内存分配失败不允许从其他备用 NUMA 节点中分配内存。
 #define ___GFP_ACCOUNT		0x400000u
 #ifdef CONFIG_LOCKDEP
 #define ___GFP_NOLOCKDEP	0x800000u
@@ -296,15 +296,15 @@ struct vm_area_struct;
  * in page fault path, while the non-light is used by khugepaged.
  */
 #define GFP_ATOMIC	(__GFP_HIGH|__GFP_ATOMIC|__GFP_KSWAPD_RECLAIM)
-#define GFP_KERNEL	(__GFP_RECLAIM | __GFP_IO | __GFP_FS)
+#define GFP_KERNEL	(__GFP_RECLAIM | __GFP_IO | __GFP_FS) // 内核中最常用的标志，该标志设置之后内核的分配内存行为可能会阻塞睡眠，可以允许内核置换出一些不活跃的内存页到磁盘中。适用于可以重新安全调度的进程上下文中
 #define GFP_KERNEL_ACCOUNT (GFP_KERNEL | __GFP_ACCOUNT)
 #define GFP_NOWAIT	(__GFP_KSWAPD_RECLAIM)
 #define GFP_NOIO	(__GFP_RECLAIM)
 #define GFP_NOFS	(__GFP_RECLAIM | __GFP_IO)
-#define GFP_USER	(__GFP_RECLAIM | __GFP_IO | __GFP_FS | __GFP_HARDWALL)
+#define GFP_USER	(__GFP_RECLAIM | __GFP_IO | __GFP_FS | __GFP_HARDWALL) // 用于映射到用户空间的内存分配，通常这些内存可以被内核或者硬件直接访问，比如硬件设备会将 Buffer 直接映射到用户空间中
 #define GFP_DMA		__GFP_DMA
 #define GFP_DMA32	__GFP_DMA32
-#define GFP_HIGHUSER	(GFP_USER | __GFP_HIGHMEM)
+#define GFP_HIGHUSER	(GFP_USER | __GFP_HIGHMEM) // 用于给用户空间分配高端内存，因为在用户虚拟内存空间中，都是通过页表来访问非直接映射的高端内存区域，所以用户空间一般使用的是高端内存区域 ZONE_HIGHMEM。
 #define GFP_HIGHUSER_MOVABLE	(GFP_HIGHUSER | __GFP_MOVABLE)
 #define GFP_TRANSHUGE_LIGHT	((GFP_HIGHUSER_MOVABLE | __GFP_COMP | \
 			 __GFP_NOMEMALLOC | __GFP_NOWARN) & ~__GFP_RECLAIM)
@@ -447,6 +447,7 @@ static inline bool gfpflags_normal_context(const gfp_t gfp_flags)
 	| 1 << (___GFP_MOVABLE | ___GFP_DMA32 | ___GFP_DMA | ___GFP_HIGHMEM)  \
 )
 
+// 将指定的gfp_mask转换为对应的物理内存区域
 static inline enum zone_type gfp_zone(gfp_t flags)
 {
 	enum zone_type z;

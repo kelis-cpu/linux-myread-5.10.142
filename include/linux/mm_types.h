@@ -67,9 +67,10 @@ struct mem_cgroup;
 #define _struct_page_alignment
 #endif
 
+// 物理页
 struct page {
 	unsigned long flags;		/* Atomic flags, some possibly
-					 * updated asynchronously */
+					 * updated asynchronously,高八位用于定位 */
 	/*
 	 * Five words (20/40 bytes) are available in this union.
 	 * WARNING: bit 0 of the first word is used for PageTail(). That
@@ -85,6 +86,9 @@ struct page {
 			 */
 			struct list_head lru;
 			/* See page-flags.h for PAGE_MAPPING_FLAGS */
+			/*
+				最低位为1：代表当前page是一个匿名页，指向该匿名页在进程虚拟内存空间中的匿名映射区域(用于物理内存到虚拟内存的映射)
+			*/
 			struct address_space *mapping;
 			pgoff_t index;		/* Our offset within mapping. */
 			/**
@@ -104,38 +108,38 @@ struct page {
 		};
 		struct {	/* slab, slob and slub */
 			union {
-				struct list_head slab_list;
+				struct list_head slab_list; // 指定当前 page 位于 slab 中的哪个具体链表上
 				struct {	/* Partial pages */
-					struct page *next;
+					struct page *next; // 当 page 位于 slab 结构中的某个管理链表上时，next 指针用于指向链表中的下一个 page
 #ifdef CONFIG_64BIT
-					int pages;	/* Nr of pages left */
-					int pobjects;	/* Approximate count */
+					int pages;	/* Nr of pages left */ // 表示 slab 中总共拥有的 page 个数。
+					int pobjects;	/* Approximate count */ // 表示 slab 中拥有的特定类型的对象个数
 #else
 					short int pages;
 					short int pobjects;
 #endif
 				};
 			};
-			struct kmem_cache *slab_cache; /* not slob */
+			struct kmem_cache *slab_cache; /* not slob */ // 用于指向当前 page 所属的 slab 管理结构
 			/* Double-word boundary */
-			void *freelist;		/* first free object */
+			void *freelist;		/* first free object */ // 指向 page 中的第一个未分配出去的空闲对象
 			union {
-				void *s_mem;	/* slab: first object */
+				void *s_mem;	/* slab: first object */ // 指向 page 中的第一个对象
 				unsigned long counters;		/* SLUB */
 				struct {			/* SLUB */
-					unsigned inuse:16;
-					unsigned objects:15;
-					unsigned frozen:1;
+					unsigned inuse:16; // 表示 slab 中已经被分配出去的对象个数
+					unsigned objects:15; //  slab 中所有的对象个数
+					unsigned frozen:1; // 当前内存页 page 被 slab 放置在 CPU 本地缓存列表中，frozen = 1，否则 frozen = 0 。
 				};
 			};
 		};
 		struct {	/* Tail pages of compound page */
-			unsigned long compound_head;	/* Bit zero is set */
+			unsigned long compound_head;	/* Bit zero is set */ // 其余尾页会通过该字段指向首页
 
 			/* First tail page only */
-			unsigned char compound_dtor;
-			unsigned char compound_order;
-			atomic_t compound_mapcount;
+			unsigned char compound_dtor; // 用于释放复合页的析构函数，保存在首页中
+			unsigned char compound_order; // 该复合页有多少个 page 组成，order 还是分配阶的概念，首页中保存
+			atomic_t compound_mapcount;  // 该复合页被多少个进程使用，内存页反向映射的概念，首页中保存
 			unsigned int compound_nr; /* 1 << compound_order */
 		};
 		struct {	/* Second tail page of compound page */

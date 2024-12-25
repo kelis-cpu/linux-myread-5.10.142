@@ -19,7 +19,7 @@ static void detect_memory_e820(void)
 {
 	int count = 0;
 	struct biosregs ireg, oreg;
-	struct boot_e820_entry *desc = boot_params.e820_table;
+	struct boot_e820_entry *desc = boot_params.e820_table; // boot_params在zeropage中
 	static struct boot_e820_entry buf; /* static so it is zeroed */
 
 	initregs(&ireg);
@@ -62,7 +62,7 @@ static void detect_memory_e820(void)
 			break;
 		}
 
-		*desc++ = buf;
+		*desc++ = buf; // 取出内存信息放到e820_table
 		count++;
 	} while (ireg.ebx && count < ARRAY_SIZE(boot_params.e820_table));
 

@@ -134,10 +134,10 @@ extern pmd_t *mm_find_pmd(struct mm_struct *mm, unsigned long address);
  * by a const pointer.
  */
 struct alloc_context {
-	struct zonelist *zonelist;
-	nodemask_t *nodemask;
-	struct zoneref *preferred_zoneref;
-	int migratetype;
+	struct zonelist *zonelist; // 运行进程 CPU 所在 NUMA  节点以及其所有备用 NUMA 节点中允许内存分配的内存区域
+	nodemask_t *nodemask; // NUMA  节点状态掩码
+	struct zoneref *preferred_zoneref; // 内存分配优先级最高的内存区域 zone
+	int migratetype; // 物理内存页的迁移类型分为：不可迁移，可回收，可迁移类型，防止内存碎片
 
 	/*
 	 * highest_zoneidx represents highest usable zone index of
@@ -149,8 +149,8 @@ struct alloc_context {
 	 * the target zone since higher zone than this index cannot be
 	 * usable for this allocation request.
 	 */
-	enum zone_type highest_zoneidx;
-	bool spread_dirty_pages;
+	enum zone_type highest_zoneidx; // 内存分配最高优先级的内存区域 zone
+	bool spread_dirty_pages; // 是否允许当前 NUMA 节点中的脏页均衡扩散迁移至其他 NUMA 节点
 };
 
 /*
@@ -567,8 +567,8 @@ unsigned int reclaim_clean_pages_from_list(struct zone *zone,
 /* The ALLOC_WMARK bits are used as an index to zone->watermark */
 #define ALLOC_WMARK_MIN		WMARK_MIN
 #define ALLOC_WMARK_LOW		WMARK_LOW
-#define ALLOC_WMARK_HIGH	WMARK_HIGH
-#define ALLOC_NO_WATERMARKS	0x04 /* don't check watermarks at all */
+#define ALLOC_WMARK_HIGH	WMARK_HIGH // 表示在内存分配的时候，当前物理内存区域 zone 中剩余内存页的数量至少要达到 _watermark[WMARK_HIGH] 水位线，才能进行内存的分配。
+#define ALLOC_NO_WATERMARKS	0x04 /* don't check watermarks at all */ // 表示在内存分配过程中完全不会考虑上述三个水位线的影响
 
 /* Mask to get the watermark bits */
 #define ALLOC_WMARK_MASK	(ALLOC_NO_WATERMARKS-1)
@@ -584,16 +584,16 @@ unsigned int reclaim_clean_pages_from_list(struct zone *zone,
 #define ALLOC_OOM		ALLOC_NO_WATERMARKS
 #endif
 
-#define ALLOC_HARDER		 0x10 /* try to alloc harder */
-#define ALLOC_HIGH		 0x20 /* __GFP_HIGH set */
-#define ALLOC_CPUSET		 0x40 /* check for correct cpuset */
+#define ALLOC_HARDER		 0x10 /* try to alloc harder */ // 表示在内存分配的时候，会放宽内存分配规则的限制，所谓的放宽规则就是降低 _watermark[WMARK_MIN] 水位线，努力使内存分配最大可能成功。
+#define ALLOC_HIGH		 0x20 /* __GFP_HIGH set */ // 当我们在 gfp_t 掩码中设置了 ___GFP_HIGH 时，ALLOC_HIGH 标识才起作用，该标识表示当前内存分配请求是高优先级的，内核急切的需要内存，如果内存分配失败则会给系统带来非常严重的后果，设置该标志通常内存是不允许分配失败的，如果空闲内存不足，则会从紧急预留内存中分配。
+#define ALLOC_CPUSET		 0x40 /* check for correct cpuset */ // 内存只能在当前进程所允许运行的 CPU 所关联的 NUMA 节点中进行分配。
 #define ALLOC_CMA		 0x80 /* allow allocations from CMA areas */
 #ifdef CONFIG_ZONE_DMA32
 #define ALLOC_NOFRAGMENT	0x100 /* avoid mixing pageblock types */
 #else
 #define ALLOC_NOFRAGMENT	  0x0
 #endif
-#define ALLOC_KSWAPD		0x800 /* allow waking of kswapd, __GFP_KSWAPD_RECLAIM set */
+#define ALLOC_KSWAPD		0x800 /* allow waking of kswapd, __GFP_KSWAPD_RECLAIM set */ // 允许唤醒 NUMA 节点中的 KSWAPD 进程，异步进行内存回收
 
 enum ttu_flags;
 struct tlbflush_unmap_batch;

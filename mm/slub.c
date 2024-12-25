@@ -3508,7 +3508,7 @@ static inline int alloc_kmem_cache_cpus(struct kmem_cache *s)
 	return 1;
 }
 
-static struct kmem_cache *kmem_cache_node;
+static struct kmem_cache *kmem_cache_node; // 全局变量，用于专门管理 kmem_cache_node 对象的 slab cache
 
 /*
  * No kmalloc_node yet so do it by hand. We know that this is the first
@@ -3578,6 +3578,7 @@ static int init_kmem_cache_nodes(struct kmem_cache *s)
 {
 	int node;
 
+	// 遍历所有的 numa 节点，为 slab cache 创建 node cache
 	for_each_node_state(node, N_NORMAL_MEMORY) {
 		struct kmem_cache_node *n;
 
@@ -3789,6 +3790,10 @@ static int kmem_cache_open(struct kmem_cache *s, slab_flags_t flags)
 #endif
 
 	if (!calculate_sizes(s, -1))
+	// calculate_sizes 函数中封装了 slab 对象内存布局的全部逻辑
+	// 计算 slab 中对象的整体内存布局所需要的 size
+    // slab 所需最合适的内存页面大小 order，slab 中所能容纳的对象个数
+    // 初始化 slab cache 中的核心参数 oo ,min,max的值
 		goto error;
 	if (disable_higher_order_debug) {
 		/*
@@ -3814,9 +3819,9 @@ static int kmem_cache_open(struct kmem_cache *s, slab_flags_t flags)
 	 * The larger the object size is, the more pages we want on the partial
 	 * list to avoid pounding the page allocator excessively.
 	 */
-	set_min_partial(s, ilog2(s->size) / 2);
+	set_min_partial(s, ilog2(s->size) / 2); // 设置 slab cache 在 node 缓存  kmem_cache_node 中的 partial 列表中 slab 的最小个数 min_partial
 
-	set_cpu_partial(s);
+	set_cpu_partial(s); // 设置 slab cache 在 cpu 本地缓存的 partial 列表中所能容纳的最大空闲对象个数
 
 #ifdef CONFIG_NUMA
 	s->remote_node_defrag_ratio = 1000;
@@ -3828,10 +3833,10 @@ static int kmem_cache_open(struct kmem_cache *s, slab_flags_t flags)
 			goto error;
 	}
 
-	if (!init_kmem_cache_nodes(s))
+	if (!init_kmem_cache_nodes(s))  // 为 slab cache 创建并初始化 node cache 数组
 		goto error;
 
-	if (alloc_kmem_cache_cpus(s))
+	if (alloc_kmem_cache_cpus(s)) // 为 slab cache 创建并初始化 cpu 本地缓存列表
 		return 0;
 
 error:
@@ -4409,7 +4414,13 @@ __kmem_cache_alias(const char *name, unsigned int size, unsigned int align,
 		   slab_flags_t flags, void (*ctor)(void *))
 {
 	struct kmem_cache *s;
-
+	/*
+		一个可以被复用的 slab cache 需要满足以下四个条件：
+		指定的 slab_flags_t 相同。
+		指定对象的 object size 要小于等于已有 slab cache 中的对象 size （kmem_cache->size）。
+		如果指定对象的 object size 与已有 kmem_cache->size 不相同，那么它们之间的差值需要再一个 word size 之内。
+		已有 slab cache 中的 slab 对象对齐 align （kmem_cache->align）要大于等于指定的 align 并且可以整除 align 。
+	*/
 	s = find_mergeable(size, align, flags, name, ctor);
 	if (s) {
 		s->refcount++;
@@ -4421,6 +4432,10 @@ __kmem_cache_alias(const char *name, unsigned int size, unsigned int align,
 		s->object_size = max(s->object_size, size);
 		s->inuse = max(s->inuse, ALIGN(size, sizeof(void *)));
 
+		// 由于这里我们会复用已有的 kmem_cache 并不会创建新的，而且我们指定的 kmem_cache 名称是 name。
+        // 为了看起来像是创建了一个名称为 name 的新 kmem_cache，所以要给被复用的 kmem_cache 起一个别名，这个别名就是我们指定的 name
+        // 在 sys 文件系统中使用我们指定的 name 为被复用 kmem_cache 创建别名
+        // 这样一来就会在 sys 文件系统中出现一个这样的目录 /sys/kernel/slab/name ，该目录下的文件包含了对应 slab cache 运行时的详细信息
 		if (sysfs_slab_alias(s, name)) {
 			s->refcount--;
 			s = NULL;
@@ -4434,7 +4449,7 @@ int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
 {
 	int err;
 
-	err = kmem_cache_open(s, flags);
+	err = kmem_cache_open(s, flags); // 核心函数，在这里会初始化 kmem_cache 的其他重要属性
 	if (err)
 		return err;
 
@@ -4442,7 +4457,7 @@ int __kmem_cache_create(struct kmem_cache *s, slab_flags_t flags)
 	if (slab_state <= UP)
 		return 0;
 
-	err = sysfs_slab_add(s);
+	err = sysfs_slab_add(s); // slab cache 整个创建过程的最后一步，利用 sysfs_slab_add 为其在 sys 文件系统中创建 /sys/kernel/slab/name 目录，该目录下的文件详细记录了 slab cache 运行时的各种信息。
 	if (err)
 		__kmem_cache_release(s);
 

@@ -36,7 +36,7 @@ struct vm_area_struct;
 /* PGDIR_SHIFT determines what a third-level page table entry can map */
 #define PGDIR_SHIFT	(PAGE_SHIFT + 2*(PAGE_SHIFT-3))
 #define PGDIR_SIZE	(1UL << PGDIR_SHIFT)
-#define PGDIR_MASK	(~(PGDIR_SIZE-1))
+#define PGDIR_MASK	(~(PGDIR_SIZE-1)) // 低29位置0
 
 /*
  * Entries per page directory level:  the Alpha is three-level, with

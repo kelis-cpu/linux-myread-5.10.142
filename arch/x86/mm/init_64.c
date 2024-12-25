@@ -177,21 +177,48 @@ static void sync_global_pgds_l4(unsigned long start, unsigned long end)
 		MAYBE_BUILD_BUG_ON(pgd_none(*pgd_ref));
 		p4d_ref = p4d_offset(pgd_ref, addr);
 
+		/*
+         * 如果全局页目录项的值为 0，说明该全局页目录项未使用，不需要同步
+         */
 		if (p4d_none(*p4d_ref))
 			continue;
 
 		spin_lock(&pgd_lock);
+		/*
+		对于一个普通的物理页来说，其对应的 page 结构中，page->index 字段用于文件映射，指示该页相对于文件的偏移；
+		page->lru 字段用于将 page 结构体接入 lru 链表（active_list 或者 inactive_list），用于页面的换出。
+		对于进程来说，其全局页目录是常驻内存的，既不会映射到文件也不会被换出，所以全局页目录对应的 page 结构中，其 index 和 lru 字段被用作了其它用途。
+		其中，index 字段保存了进程的内存描述符 mm_struct 的实例；lru 字段接入了全局页目录链表 pgd_list
+		*/
+		/*
+         * 遍历 pgd_list，获取到用户进程的全局页目录对应的 page 地址，保存在参数 page 中
+         */
 		list_for_each_entry(page, &pgd_list, lru) {
 			pgd_t *pgd;
 			p4d_t *p4d;
 			spinlock_t *pgt_lock;
 
+			/*
+             * page_address 函数获取到 page 对应的虚拟地址，也是全局页目录的基地址
+             * pgd_index 获取到指定地址所对应的全局页目录项索引
+             * 两者相加，就得到指定地址对应的全局页目录项的指针
+             */
 			pgd = (pgd_t *)page_address(page) + pgd_index(addr);
 			p4d = p4d_offset(pgd, addr);
 			/* the pgt_lock only for Xen */
+			 /*
+             * 对于全局页目录所对应的 page 来说，其 page->index 保存的是进程的内存描述符 mm
+             * pgd_page_get_mm 函数从 page->index 中获取内存描述符 mm
+             * mm->page_table_lock 是保护页表的自旋锁
+             */
+
 			pgt_lock = &pgd_page_get_mm(page)->page_table_lock;
 			spin_lock(pgt_lock);
 
+			/*
+             * 如果用户进程的全局页目录项的值为 0，则将内核空间的全局页目录项拷贝过来
+             * 如果不为 0，说明已经同步过了，此时内核空间和用户进程的的页目录项所对应 page 的虚拟地址应该是一致的；如果不一致，说明是内核 bug
+             */
 			if (!p4d_none(*p4d_ref) && !p4d_none(*p4d))
 				BUG_ON(p4d_page_vaddr(*p4d)
 				       != p4d_page_vaddr(*p4d_ref));
@@ -208,6 +235,7 @@ static void sync_global_pgds_l4(unsigned long start, unsigned long end)
 /*
  * When memory was added make sure all the processes MM have
  * suitable PGD entries in the local PGD level page.
+ 将指定内存区间对应的内核空间的全局页目录项同步到用户空间的进程。
  */
 static void sync_global_pgds(unsigned long start, unsigned long end)
 {
@@ -443,6 +471,7 @@ void __init cleanup_highmap(void)
 /*
  * Create PTE level page table mapping for physical addresses.
  * It returns the last physical address mapped.
+ * 页表初始化，即填充页表项
  */
 static unsigned long __meminit
 phys_pte_init(pte_t *pte_page, unsigned long paddr, unsigned long paddr_end,
@@ -483,6 +512,10 @@ phys_pte_init(pte_t *pte_page, unsigned long paddr, unsigned long paddr_end,
 		if (0)
 			pr_info("   pte=%p addr=%lx pte=%016lx\n", pte, paddr,
 				pfn_pte(paddr >> PAGE_SHIFT, PAGE_KERNEL).pte);
+		/*
+		 * 如果页表项没有映射过，则设置页表项并增加 pages 的值
+		 * 然后，还要更新 paddr_last 的值，即映射的最大物理地址
+		 */
 		pages++;
 		set_pte_init(pte, pfn_pte(paddr >> PAGE_SHIFT, prot), init);
 		paddr_last = (paddr & PAGE_MASK) + PAGE_SIZE;
@@ -502,6 +535,12 @@ static unsigned long __meminit
 phys_pmd_init(pmd_t *pmd_page, unsigned long paddr, unsigned long paddr_end,
 	      unsigned long page_size_mask, pgprot_t prot, bool init)
 {
+	/*
+     * pages 保存映射的 2MB 页的数量
+     * paddr_last 保存映射的最大地址
+     * i 用作循环变量，初始化为起始地址 paddr 对应的中层页目录项索引
+     * pmd_index 获取虚拟地址对应的中层页目录项（Page Middle Directory Entry，PMDE）索引
+     */
 	unsigned long pages = 0, paddr_next;
 	unsigned long paddr_last = paddr_end;
 
@@ -513,6 +552,13 @@ phys_pmd_init(pmd_t *pmd_page, unsigned long paddr, unsigned long paddr_end,
 		pgprot_t new_prot = prot;
 
 		paddr_next = (paddr & PMD_MASK) + PMD_SIZE;
+		/*
+         * paddr_next 计算出下一次迭代时，要映射的起始地址
+         * 在迭代过程中，如果 paddr >= paddr_next
+         * 那么超出地址区间的中层页目项如何处理呢？
+         * 如果处于系统初始化阶段并且从 paddr 到 paddr_next 之间的内存是空洞，那么就将该中层页目项设置为 0；否则，忽略掉，什么也不做。
+         * E820_RAM 和 E820_RESERVED_KERN 都是可用内存类型，e820_any_mapped 函数检查指定范围的内存与指定类型的内存块之间是否有交集。如果从 address（向下对齐到 PMD_SIZE）到 next 之间的内存，与可用内存块之间没有任何交集，说明这整段内存都是空洞，则将对应的中层页目录项设置为 0。
+         */
 		if (paddr >= paddr_end) {
 			if (!after_bootmem &&
 			    !e820__mapped_any(paddr & PMD_MASK, paddr_next,
@@ -566,6 +612,14 @@ phys_pmd_init(pmd_t *pmd_page, unsigned long paddr, unsigned long paddr_end,
 			continue;
 		}
 
+		/*
+         * 程序来到这里，肯定是不能映射 2MB 的页了
+         * 不管是原先映射到 2MB 的页需要拆分成更细粒度的页，还是原先没有映射，都需要建立新的页表
+         * 建立新页表，就需要为页表分配一页内存，分配工作是通过 alloc_low_page 函数完成的
+         * 有了页表，通过 phys_pte_init 函数填充页表项，来进行映射
+         * last_map_addr 表示映射的最大地址
+         * 然后，在自旋锁的保护下，调用 pmd_populate_kernel 函数将页表的的物理地址以及页标志组合成中层页目录项写入中层页目录中
+         */
 		pte = alloc_low_page();
 		paddr_last = phys_pte_init(pte, paddr, paddr_end, new_prot, init);
 
@@ -582,15 +636,20 @@ phys_pmd_init(pmd_t *pmd_page, unsigned long paddr, unsigned long paddr_end,
  * and physical address do not have to be aligned at this level. KASLR can
  * randomize virtual addresses up to this level.
  * It returns the last physical address mapped.
+ * 为指定的物理内存区间填充上对应的上层页目录项
  */
 static unsigned long __meminit
 phys_pud_init(pud_t *pud_page, unsigned long paddr, unsigned long paddr_end,
 	      unsigned long page_size_mask, pgprot_t _prot, bool init)
 {
+	 /*
+     * pages 保存映射的 1GB 页的数量
+     * paddr_last 保存映射的最大地址
+	 */
 	unsigned long pages = 0, paddr_next;
 	unsigned long paddr_last = paddr_end;
 	unsigned long vaddr = (unsigned long)__va(paddr);
-	int i = pud_index(vaddr);
+	int i = pud_index(vaddr); // PUD：page upper directory
 
 	for (; i < PTRS_PER_PUD; i++, paddr = paddr_next) {
 		pud_t *pud;
@@ -598,7 +657,19 @@ phys_pud_init(pud_t *pud_page, unsigned long paddr, unsigned long paddr_end,
 		pgprot_t prot = _prot;
 
 		vaddr = (unsigned long)__va(paddr);
+		/* pud_page 是上层页目录的基地址，pud_index(addr) 计算出 addr 对应的上层页目录项索引
+         * 两者相加，就得到 vaddr 对应的上层页目录项指针
+		*/
 		pud = pud_page + pud_index(vaddr);
+		/*
+         * paddr_next 计算出下一次迭代时，要映射的起始地址
+         * 在迭代过程中，如果 paddr >= end，说明此时映射的地址超出了指定的区间
+         * 那么超出地址区间的上层页目项如何处理呢？
+         * 如果处于系统初始化阶段，伙伴系统还未就绪并且从 addr 到 next 之间的内存是空洞，那么就将该上层页目项设置为 0；否则，忽略掉，什么也不做。
+         * E820_RAM 和 E820_RESERVED_KERN 都是可用内存类型，e820_any_mapped 函数检查指定范围的内存与指定类型的内存块之间是否有交集。如果从 addr（向下对齐到 PUD_SIZE）到 next 之间的内存，与可用内存块之间没有任何交集，说明这整段内存都是空洞，将上层页目录项设置为 0。
+         *
+         * 宏 __pud 用于生成上层页目录项
+         */
 		paddr_next = (paddr & PUD_MASK) + PUD_SIZE;
 
 		if (paddr >= paddr_end) {
@@ -611,8 +682,23 @@ phys_pud_init(pud_t *pud_page, unsigned long paddr, unsigned long paddr_end,
 			continue;
 		}
 
+		/*
+         * pud_none 用于获取上层页目录项的值，如果该值为真，说明地址 addr 对应的上层页目录项已经创建了
+         */
 		if (!pud_none(*pud)) {
+			 /*
+             * pud_large 用于检测上层页目录项是否直接映射到 1GB 的页。如果是，返回 true；否则，返回 false。
+             * 上层页目录项和中层页目录项的位 7（PS 位）指示该页表项是直接映射到页还是指向下一级页表。
+             * 对于上层页目录项来说，如果 PS 位置位，说明该表项直接映射 1GB 的页
+             * 对于中层页目录项来说，如果 PS 位置位，说明该表项直接映射到 2MB 的页
+             * 这里处理的是没有直接映射到 1GB 页的情况
+             */
 			if (!pud_large(*pud)) {
+				/*
+                 * 获取到第 0 个中层页目录项的地址（同时也是中层页目录的基地址）并赋值给 pmd
+                 * 然后通过 phys_pmd_init 函数填充该中层页目录，填充时会参考页大小掩码 page_size_mask
+                 * 填充
+                 */
 				pmd = pmd_offset(pud, 0);
 				paddr_last = phys_pmd_init(pmd, paddr,
 							   paddr_end,
@@ -632,15 +718,33 @@ phys_pud_init(pud_t *pud_page, unsigned long paddr, unsigned long paddr_end,
 			 * not differ with respect to page frame and
 			 * attributes.
 			 */
+			 /*
+			 * 程序来到这里，说明当前的上层页目录项已经映射到 1GB 内存页
+			 * 如果页大小掩码 page_size_mask 中包含 1GB 页的掩码位，
+			 * 那么我们直接利用现有的上层页目录项就可以了
+			 * 此时，需要更新映射的页数 pages 及 paddr_last 的值
+			 * 
+			 */
 			if (page_size_mask & (1 << PG_LEVEL_1G)) {
 				if (!after_bootmem)
 					pages++;
 				paddr_last = paddr_next;
 				continue;
 			}
+			/*
+             * 如果当前上层页目录项本身已经映射到 1GB 的页，而 page_size_mask 中未包含 1GB 页的比特位，
+             * 说明要求映射成更细粒度的页，那么就需要对当前 1GB 页进行拆分。
+             * 既然需要拆分，那么就要清除当前上层页目录项中的 PS 位（位 7）
+             * pte_clrhuge 函数负责清除上层页目录项中的 PS 位
+             * pte_pgprot 获取清除巨页标志后的页属性，并赋值给 prot
+             */
 			prot = pte_pgprot(pte_clrhuge(*(pte_t *)pud));
 		}
-
+		/*
+         * 这里处理上层页目录项为 0（说明没映射过）但要求映射 1GB 页的情况
+         * 先将映射的页数量 pages 加 1，然后将 addr 对应的物理地址及页标志组合成页表项格式后，通过 set_pte 函数写入上层页目录项中
+         * 再更新 paddr_last 的值
+         */
 		if (page_size_mask & (1<<PG_LEVEL_1G)) {
 			pages++;
 			spin_lock(&init_mm.page_table_lock);
@@ -656,6 +760,13 @@ phys_pud_init(pud_t *pud_page, unsigned long paddr, unsigned long paddr_end,
 			continue;
 		}
 
+		/*
+         * 程序来到这里，肯定是不能映射 1GB 的页了
+         * 不管是原先映射到 1GB 的页，还是原先没有映射，都需要重新建立页表
+         * 重新建立页表，就需要为中层页目录分配一页内存，分配工作是通过 alloc_low_page 函数完成的
+         * 有了中层页目录，通过 phys_pmd_init 函数填充中层页目录项，
+         * 然后，在自旋锁的保护下，调用 pud_populate 函数将中层页目录项的的物理地址以及页标志组合成上层页目录项写入上层页目录中
+         */
 		pmd = alloc_low_page();
 		paddr_last = phys_pmd_init(pmd, paddr, paddr_end,
 					   page_size_mask, prot, init);
@@ -665,7 +776,7 @@ phys_pud_init(pud_t *pud_page, unsigned long paddr, unsigned long paddr_end,
 		spin_unlock(&init_mm.page_table_lock);
 	}
 
-	update_page_count(PG_LEVEL_1G, pages);
+	update_page_count(PG_LEVEL_1G, pages); // 更新1gb页的数量，用于信息统计
 
 	return paddr_last;
 }
@@ -680,6 +791,7 @@ phys_p4d_init(p4d_t *p4d_page, unsigned long paddr, unsigned long paddr_end,
 	vaddr = (unsigned long)__va(paddr);
 	vaddr_end = (unsigned long)__va(paddr_end);
 
+	// 只有四级页表
 	if (!pgtable_l5_enabled())
 		return phys_pud_init((pud_t *) p4d_page, paddr, paddr_end,
 				     page_size_mask, prot, init);
@@ -731,16 +843,30 @@ __kernel_physical_mapping_init(unsigned long paddr_start,
 	unsigned long vaddr, vaddr_start, vaddr_end, vaddr_next, paddr_last;
 
 	paddr_last = paddr_end;
+	// 物理地址转换为虚拟地址
 	vaddr = (unsigned long)__va(paddr_start);
 	vaddr_end = (unsigned long)__va(paddr_end);
 	vaddr_start = vaddr;
 
 	for (; vaddr < vaddr_end; vaddr = vaddr_next) {
-		pgd_t *pgd = pgd_offset_k(vaddr);
+		pgd_t *pgd = pgd_offset_k(vaddr); // 获取虚拟地址对于的全局页目录项地址
 		p4d_t *p4d;
 
+		/*
+         * next 是下一轮要映射内存区间的起始地址
+         * 每个全局页目录项控制着 39 位的内存空间，所以：
+         * 1、PGDIR_SIZE 表示每个全局页目录项控制的内存大小，扩展为 512GB，即 2 的 39 次方
+         * 2、PGDIR_MASK 是全局页目录掩码，该掩码会屏蔽掉低 39 位（将低 39 位置 0）
+         */
 		vaddr_next = (vaddr & PGDIR_MASK) + PGDIR_SIZE;
 
+		/*
+         * pgd_val 用于获取全局页目录项的值
+         * 如果全局页目录项的值为真，说明该全局页目录项指向的上层页目录是存在的，
+         * 通过 pgd_page_vaddr 可以获取到全局页目录项指向的上层页目录的虚拟地址，
+         * 然后通过 phys_pud_init 函数对上层页目录进行初始化
+         * phys_pud_init 函数会参考页大小掩码 page_size_mask 来选择映射的页大小，该函数返回最后映射的地址
+         */
 		if (pgd_val(*pgd)) {
 			p4d = (p4d_t *)pgd_page_vaddr(*pgd);
 			paddr_last = phys_p4d_init(p4d, __pa(vaddr),
@@ -750,10 +876,24 @@ __kernel_physical_mapping_init(unsigned long paddr_start,
 			continue;
 		}
 
+		/*
+         * 如果全局页目录项的值为 0，说明该全局页目录项未使用过，其对应的上层页目录肯定是不存在的
+         * 所以先通过 alloc_low_page 函数分配一个页，作为上层页目录
+         * 然后通过 phys_pud_init 函数对上层页目录进行初始化，返回最后映射的地址
+         * phys_pud_init 函数会参考页大小掩码 page_size_mask 来选择映射的页大小
+         * phys_pud_init 函数最多填充 512 个上层页目录项
+         * 
+         * 宏 __pa 将虚拟地址转换成物理地址
+         */
 		p4d = alloc_low_page();
 		paddr_last = phys_p4d_init(p4d, __pa(vaddr), __pa(vaddr_end),
 					   page_size_mask, prot, init);
 
+		
+		/*
+         * 在自旋锁的保护下，通过 pgd_populate 函数，填充全局页目录项
+         * pgd_populate 函数会获取上层页目录的物理地址，将其与页标志组装成符合全局页目录项的格式，然后写入全局页目录项中
+         */
 		spin_lock(&init_mm.page_table_lock);
 		if (pgtable_l5_enabled())
 			pgd_populate_init(&init_mm, pgd, p4d, init);
@@ -762,9 +902,15 @@ __kernel_physical_mapping_init(unsigned long paddr_start,
 					  (pud_t *) p4d, init);
 
 		spin_unlock(&init_mm.page_table_lock);
+		/*
+         * 我们在 pgd_populate 函数中，写入了新的全局页目录项，全局页目录被修改了，所以 pgd_changed 被设置为 true
+         */
 		pgd_changed = true;
 	}
-
+	/*
+     * 如果我们修改了全局页目录项，则需要把新的内核空间的全局页目项同步到所有用户进程的全局页目录中
+     * 同步过程是通过 sync_global_pgds 函数执行的
+     */
 	if (pgd_changed)
 		sync_global_pgds(vaddr_start, vaddr_end - 1);
 

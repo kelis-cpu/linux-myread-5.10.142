@@ -828,8 +828,8 @@ static void __init mm_init(void)
 	page_ext_init_flatmem();
 	init_debug_pagealloc();
 	report_meminit();
-	mem_init();
-	kmem_cache_init();
+	mem_init(); // 释放未使用的内存到伙伴系统
+	kmem_cache_init(); // 初始化slab内存管理, 创建并初始化 slab allocator 体系
 	kmemleak_init();
 	pgtable_init();
 	debug_objects_mem_init();
@@ -868,15 +868,15 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	page_address_init();
 	pr_notice("%s", linux_banner);
 	early_security_init();
-	setup_arch(&command_line);
+	setup_arch(&command_line); // 设置特定架构信息，同时初始化memblock
 	setup_boot_config(command_line);
 	setup_command_line(command_line);
 	setup_nr_cpu_ids();
-	setup_per_cpu_areas();
+	setup_per_cpu_areas(); // 给每个cpu分配内存
 	smp_prepare_boot_cpu();	/* arch-specific boot-cpu hooks */
 	boot_cpu_hotplug_init();
 
-	build_all_zonelists(NULL);
+	build_all_zonelists(NULL); // 初始化内存结点和内段区域
 	page_alloc_init();
 
 	pr_notice("Kernel command line: %s\n", saved_command_line);
@@ -902,7 +902,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	vfs_caches_init_early();
 	sort_main_extable();
 	trap_init();
-	mm_init();
+	mm_init(); // 建立内核的内存分配器
 
 	ftrace_init();
 
@@ -972,7 +972,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 	early_boot_irqs_disabled = false;
 	local_irq_enable();
 
-	kmem_cache_init_late();
+	kmem_cache_init_late(); // 完善分配器的缓存机制
 
 	/*
 	 * HACK ALERT! This is early. We're enabling the console before
@@ -1010,7 +1010,7 @@ asmlinkage __visible void __init __no_sanitize_address start_kernel(void)
 		initrd_start = 0;
 	}
 #endif
-	setup_per_cpu_pageset();
+	setup_per_cpu_pageset(); // 初始化cpu高速缓存行
 	numa_policy_init();
 	acpi_early_init();
 	if (late_time_init)

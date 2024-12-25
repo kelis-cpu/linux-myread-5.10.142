@@ -31,7 +31,7 @@
 #define E820_RAM	1
 #define E820_RESERVED	2
 #define E820_ACPI	3
-#define E820_NVS	4
+#define E820_NVS	4 // “Non-Volatile Storage”，即“不挥发”存储器，包括 ROM、EPROM、Flash 存储器等
 #define E820_UNUSABLE	5
 #define E820_PMEM	7
 

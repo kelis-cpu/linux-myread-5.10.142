@@ -698,12 +698,12 @@ void prep_compound_page(struct page *page, unsigned int order)
 	int i;
 	int nr_pages = 1 << order;
 
-	__SetPageHead(page);
+	__SetPageHead(page);  // 设置首页 page 中的 flags 为 PG_head
 	for (i = 1; i < nr_pages; i++) {
 		struct page *p = page + i;
 		set_page_count(p, 0);
 		p->mapping = TAIL_MAPPING;
-		set_compound_head(p, page);
+		set_compound_head(p, page); // 首页之后的 page 全部是尾页，循环遍历设置尾页
 	}
 
 	set_compound_page_dtor(page, COMPOUND_PAGE_DTOR);
@@ -812,6 +812,13 @@ static inline void set_buddy_order(struct page *page, unsigned int order)
  * Setting, clearing, and testing PageBuddy is serialized by zone->lock.
  *
  * For recording page's order, we use page_private(page).
+ *  1.伙伴系统所管理的内存页必须是可用的，不能处于内存空洞中，通过 page_is_guard 函数判断。
+
+	2.伙伴必须是空闲的内存块，这些内存块必须存在于伙伴系统中，组成内存块的内存页 page 结构中的 flag 标志设置了 PG_buddy 标记。通过 PageBuddy 判断这些内存页是否在伙伴系统中。
+
+	3.两个互为伙伴的内存块必须拥有相同的分配阶 order，也就是它们之间的大小尺寸必须一致。通过 page_order(buddy) == order 判断
+
+	4.互为伙伴关系的内存块必须处于相同的物理内存区域 zone 中。通过 page_zone_id(page) == page_zone_id(buddy) 判断。
  */
 static inline bool page_is_buddy(struct page *page, struct page *buddy,
 							unsigned int order)
@@ -990,13 +997,13 @@ static inline void __free_one_page(struct page *page,
 		int migratetype, fpi_t fpi_flags)
 {
 	struct capture_control *capc = task_capc(zone);
-	unsigned long buddy_pfn;
-	unsigned long combined_pfn;
+	unsigned long buddy_pfn; // 伙伴内存块的 pfn
+	unsigned long combined_pfn; // 释放内存块与其伙伴内存块合并之后新内存块的 pfn
 	unsigned int max_order;
-	struct page *buddy;
+	struct page *buddy; // 伙伴内存块的首页 page 指针
 	bool to_tail;
 
-	max_order = min_t(unsigned int, MAX_ORDER - 1, pageblock_order);
+	max_order = min_t(unsigned int, MAX_ORDER - 1, pageblock_order); // 伙伴系统中的最大分配阶
 
 	VM_BUG_ON(!zone_is_initialized(zone));
 	VM_BUG_ON_PAGE(page->flags & PAGE_FLAGS_CHECK_AT_PREP, page);
@@ -1009,30 +1016,33 @@ static inline void __free_one_page(struct page *page,
 	VM_BUG_ON_PAGE(bad_range(zone, page), page);
 
 continue_merging:
+	// 从释放内存块的当前分配阶开始一直向高阶合并内存块，直到不能合并为止
 	while (order < max_order) {
 		if (compaction_capture(capc, page, order, migratetype)) {
 			__mod_zone_freepage_state(zone, -(1 << order),
 								migratetype);
 			return;
 		}
+		// 在 free_area[order] 中查找伙伴内存块的 pfn
 		buddy_pfn = __find_buddy_pfn(pfn, order);
-		buddy = page + (buddy_pfn - pfn);
+		buddy = page + (buddy_pfn - pfn); // 根据偏移 buddy_pfn - pfn 计算伙伴内存块中的首页 page 地址
 
 		if (!pfn_valid_within(buddy_pfn))
 			goto done_merging;
-		if (!page_is_buddy(page, buddy, order))
+		if (!page_is_buddy(page, buddy, order))  // 将page和buddy进行配对
 			goto done_merging;
 		/*
 		 * Our buddy is free or it is CONFIG_DEBUG_PAGEALLOC guard page,
 		 * merge with it and move up one order.
 		 */
+		 // 检查伙伴 pfn 的有效性
 		if (page_is_guard(buddy))
 			clear_page_guard(zone, buddy, order, migratetype);
 		else
-			del_page_from_free_list(buddy, zone, order);
-		combined_pfn = buddy_pfn & pfn;
-		page = page + (combined_pfn - pfn);
-		pfn = combined_pfn;
+			del_page_from_free_list(buddy, zone, order); // 将伙伴内存块从当前 free_area[order] 列表中摘下
+		combined_pfn = buddy_pfn & pfn; // 合并后新内存块首页 page 的 pfn
+		page = page + (combined_pfn - pfn); // 合并后新内存块首页 page 指针
+		pfn = combined_pfn; // 以合并后的新内存块为基础继续向高阶 free_area 合并
 		order++;
 	}
 	if (order < MAX_ORDER - 1) {
@@ -1061,6 +1071,8 @@ continue_merging:
 	}
 
 done_merging:
+	// 表示在当前伙伴系统 free_area[order] 中没有找到伙伴内存块，停止合并
+    // 设置内存块的分配阶 order，存储在第一个 page 结构中的 private 属性中
 	set_buddy_order(page, order);
 
 	if (fpi_flags & FPI_TO_TAIL)
@@ -1518,14 +1530,14 @@ static void __free_pages_ok(struct page *page, unsigned int order,
 	int migratetype;
 	unsigned long pfn = page_to_pfn(page);
 
-	if (!free_pages_prepare(page, order, true))
+	if (!free_pages_prepare(page, order, true)) // 在将内存页回收至伙伴系统之前，需要将内存页 page 相关的无用属性清理一下
 		return;
 
-	migratetype = get_pfnblock_migratetype(page, pfn);
+	migratetype = get_pfnblock_migratetype(page, pfn);  // 获取页面迁移类型，后续会将内存页释放至伙伴系统中的 free_list[migratetype] 中
 	local_irq_save(flags);
 	__count_vm_events(PGFREE, 1 << order);
 	free_one_page(page_zone(page), page, pfn, order, migratetype,
-		      fpi_flags);
+		      fpi_flags);  // 进入伙伴系统，释放内存
 	local_irq_restore(flags);
 }
 
@@ -2269,7 +2281,7 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 				gfp_t gfp_flags)
 {
 	set_page_private(page, 0);
-	set_page_refcounted(page);
+	set_page_refcounted(page); // 将页面的使用计数设置为 1 ，表示当前物理内存页正在被使用。
 
 	arch_alloc_page(page, order);
 	if (debug_pagealloc_enabled_static())
@@ -2282,13 +2294,13 @@ inline void post_alloc_hook(struct page *page, unsigned int order,
 static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags,
 							unsigned int alloc_flags)
 {
-	post_alloc_hook(page, order, gfp_flags);
+	post_alloc_hook(page, order, gfp_flags);  // 初始化 struct page，清除一些页面属性标记
 
 	if (!free_pages_prezeroed() && want_init_on_alloc(gfp_flags))
 		kernel_init_free_pages(page, 1 << order);
 
 	if (order && (gfp_flags & __GFP_COMP))
-		prep_compound_page(page, order);
+		prep_compound_page(page, order);  // 设置复合页
 
 	/*
 	 * page is set pfmemalloc when ALLOC_NO_WATERMARKS was necessary to
@@ -2297,9 +2309,9 @@ static void prep_new_page(struct page *page, unsigned int order, gfp_t gfp_flags
 	 * being used for !PFMEMALLOC purposes.
 	 */
 	if (alloc_flags & ALLOC_NO_WATERMARKS)
-		set_page_pfmemalloc(page);
+		set_page_pfmemalloc(page);  // 使用 set_page_XXX(page) 方法设置 page 的 PG_XXX 标志位
 	else
-		clear_page_pfmemalloc(page);
+		clear_page_pfmemalloc(page); // 使用 clear_page_XXX(page) 方法清除 page 的 PG_XXX 标志位
 }
 
 /*
@@ -2315,13 +2327,14 @@ struct page *__rmqueue_smallest(struct zone *zone, unsigned int order,
 	struct page *page;
 
 	/* Find a page of the appropriate size in the preferred list */
+	/* 从当前分配阶 order 开始在伙伴系统对应的  free_area[order]  里查找合适尺寸的内存块*/
 	for (current_order = order; current_order < MAX_ORDER; ++current_order) {
-		area = &(zone->free_area[current_order]);
-		page = get_page_from_free_area(area, migratetype);
+		area = &(zone->free_area[current_order]); // 获取当前 order 在伙伴系统中对应的 free_area[order] 
+		page = get_page_from_free_area(area, migratetype); // 从 free_area[order] 中对应的 free_list[MIGRATE_TYPE] 链表中获取空闲内存块
 		if (!page)
 			continue;
 		del_page_from_free_list(page, zone, current_order);
-		expand(zone, page, order, current_order, migratetype);
+		expand(zone, page, order, current_order, migratetype); // 将摘下来的内存块进行减半分裂并插入对应的尺寸的 free_area 中
 		set_pcppage_migratetype(page, migratetype);
 		return page;
 	}
@@ -2762,18 +2775,21 @@ static __always_inline bool
 __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 						unsigned int alloc_flags)
 {
-	struct free_area *area;
-	int current_order;
-	int min_order = order;
+	struct free_area *area; // 最终会 fall back 到伙伴系统的哪个 free_area 中分配内存
+	int current_order; // fallback 和正常的分配流程正好相反，是从最高阶的free_area[MAX_ORDER - 1] 开始查找空闲内存块
+	int min_order = order; // 最初指定的内存分配阶
 	struct page *page;
-	int fallback_mt;
-	bool can_steal;
+	int fallback_mt; // 最终计算出 fallback 到哪个页面迁移类型 free_list 上
+	bool can_steal; // 是否可以从 free_list[fallback] 中窃取内存块到 free_list[start_migratetype]  中
+    // start_migratetype 表示我们最初指定的页面迁移类型
 
 	/*
 	 * Do not steal pages from freelists belonging to other pageblocks
 	 * i.e. orders < pageblock_order. If there are no local zones free,
 	 * the zonelists will be reiterated without ALLOC_NOFRAGMENT.
 	 */
+	//   如果设置了 ALLOC_NOFRAGMENT 表示不希望引入内存碎片
+    // 在这种情况下内核会更加倾向于分配一个尽可能大的内存块，避免向其他链表引入内存碎片
 	if (alloc_flags & ALLOC_NOFRAGMENT)
 		min_order = pageblock_order;
 
@@ -2782,9 +2798,11 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 	 * approximates finding the pageblock with the most free pages, which
 	 * would be too costly to do exactly.
 	 */
+	 // fallback 内存分配流程从最高阶 free_area 开始查找空闲内存块（页面迁移类型为 fallback 类型）
 	for (current_order = MAX_ORDER - 1; current_order >= min_order;
 				--current_order) {
 		area = &(zone->free_area[current_order]);
+		// 按照上述的内存分配 fallback 规则查找最合适的 fallback 迁移类型
 		fallback_mt = find_suitable_fallback(area, current_order,
 				start_migratetype, false, &can_steal);
 		if (fallback_mt == -1)
@@ -2798,6 +2816,10 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 		 * allocation falls back into a different pageblock than this
 		 * one, it won't cause permanent fragmentation.
 		 */
+		 // can_steal 会在 find_suitable_fallback 的过程中被设置
+        // 当我们指定的页面迁移类型为 MIGRATE_MOVABLE 并且无法从其他 fallback 迁移类型列表中窃取页面 can_steal = false 时
+        // 内核会更加倾向于 fallback 分配最小的可用页面，即尺寸和指定order最接近的页面数量而不是尺寸最大的
+        // 因为这里的条件是分配可移动的页面类型，天然可以避免永久内存碎片，无需按照最大的尺寸分配
 		if (!can_steal && start_migratetype == MIGRATE_MOVABLE
 					&& current_order > order)
 			goto find_smallest;
@@ -2808,6 +2830,8 @@ __rmqueue_fallback(struct zone *zone, int order, int start_migratetype,
 	return false;
 
 find_smallest:
+	// 该分支目的在于寻找尺寸最贴近指定 order 大小的最小可用页面
+    // 从指定 order 开始 fallback
 	for (current_order = order; current_order < MAX_ORDER;
 							current_order++) {
 		area = &(zone->free_area[current_order]);
@@ -2825,13 +2849,13 @@ find_smallest:
 
 do_steal:
 	page = get_page_from_free_area(area, fallback_mt);
-
+	 // 从 free_list[fallback_mt] 中窃取页面到 free_list[start_migratetype] 中
 	steal_suitable_fallback(zone, page, alloc_flags, start_migratetype,
 								can_steal);
 
 	trace_mm_page_alloc_extfrag(page, order, current_order,
 		start_migratetype, fallback_mt);
-
+	// 返回到 __rmqueue 函数中进行 retry 重试流程，此时 free_list[start_migratetype] 中已经有足够的内存页面可供分配了
 	return true;
 
 }
@@ -2861,13 +2885,13 @@ __rmqueue(struct zone *zone, unsigned int order, int migratetype,
 		}
 	}
 retry:
-	page = __rmqueue_smallest(zone, order, migratetype);
+	page = __rmqueue_smallest(zone, order, migratetype);  // 首先进入伙伴系统到指定页面迁移类型的 free_list[migratetype] 获取空闲内存块
 	if (unlikely(!page)) {
 		if (alloc_flags & ALLOC_CMA)
-			page = __rmqueue_cma_fallback(zone, order);
+			page = __rmqueue_cma_fallback(zone, order); // 如果迁移类型是 MIGRATE_MOVABLE 则优先 fallback 到 CMA 区中分配内存
 
 		if (!page && __rmqueue_fallback(zone, order, migratetype,
-								alloc_flags))
+								alloc_flags)) // 走常规的伙伴系统 fallback 流程，
 			goto retry;
 	}
 out:
@@ -3182,21 +3206,23 @@ static void free_unref_page_commit(struct page *page, unsigned long pfn)
 	 * areas back if necessary. Otherwise, we may have to free
 	 * excessively into the page allocator
 	 */
+	 // 内核这里只会将 UNMOVABLE,MOVABLE,RECLAIMABLE 这三种页面迁移类型放入 pcplist 中，其余的迁移类型均释放回伙伴系统
 	if (migratetype >= MIGRATE_PCPTYPES) {
 		if (unlikely(is_migrate_isolate(migratetype))) {
 			free_one_page(zone, page, pfn, 0, migratetype,
-				      FPI_NONE);
+				      FPI_NONE); // 释放回伙伴系统
 			return;
 		}
 		migratetype = MIGRATE_MOVABLE;
 	}
 
-	pcp = &this_cpu_ptr(zone->pageset)->pcp;
+	pcp = &this_cpu_ptr(zone->pageset)->pcp; // 获取运行当前进程的 CPU 高速缓存列表 pcplist
 	list_add(&page->lru, &pcp->lists[migratetype]);
 	pcp->count++;
+	// 如果 pcp 中的页面总数超过了 high 水位线，则将 pcp 中的 batch 个页面释放回伙伴系统中
 	if (pcp->count >= pcp->high) {
 		unsigned long batch = READ_ONCE(pcp->batch);
-		free_pcppages_bulk(zone, batch, pcp);
+		free_pcppages_bulk(zone, batch, pcp); // 释放 batch 个页面回伙伴系统中
 	}
 }
 
@@ -3206,13 +3232,13 @@ static void free_unref_page_commit(struct page *page, unsigned long pfn)
 void free_unref_page(struct page *page)
 {
 	unsigned long flags;
-	unsigned long pfn = page_to_pfn(page);
+	unsigned long pfn = page_to_pfn(page); // 获取要释放的物理内存页对应的物理页号 pfn
 
 	if (!free_unref_page_prepare(page, pfn))
 		return;
 
 	local_irq_save(flags);
-	free_unref_page_commit(page, pfn);
+	free_unref_page_commit(page, pfn); // 释放物理内存页至 pcplist 中
 	local_irq_restore(flags);
 }
 
@@ -3373,6 +3399,9 @@ static inline void zone_statistics(struct zone *preferred_zone, struct zone *z)
 }
 
 /* Remove page from the per-cpu list, caller must protect the list */
+/* pcplist 中缓存的内存页面其实全部来自于伙伴系统，当 pcplist 中的页面数量 count 为 0 （表示此时 pcplist 里没有缓存的页面）时
+	内核会调用 rmqueue_bulk 从伙伴系统中获取 batch 个物理页面添加到 pcplist
+*/
 static struct page *__rmqueue_pcplist(struct zone *zone, int migratetype,
 			unsigned int alloc_flags,
 			struct per_cpu_pages *pcp,
@@ -3384,14 +3413,14 @@ static struct page *__rmqueue_pcplist(struct zone *zone, int migratetype,
 		if (list_empty(list)) {
 			pcp->count += rmqueue_bulk(zone, 0,
 					pcp->batch, list,
-					migratetype, alloc_flags);
+					migratetype, alloc_flags); // 如果当前 pcplist 中的页面为空，那么则从伙伴系统中获取 batch 个页面放入 pcplist 中
 			if (unlikely(list_empty(list)))
 				return NULL;
 		}
 
-		page = list_first_entry(list, struct page, lru);
+		page = list_first_entry(list, struct page, lru); // 获取 pcplist 上的第一个物理页面
 		list_del(&page->lru);
-		pcp->count--;
+		pcp->count--; // pcplist 中的 count  减一
 	} while (check_new_pcp(page));
 
 	return page;
@@ -3407,10 +3436,10 @@ static struct page *rmqueue_pcplist(struct zone *preferred_zone,
 	struct page *page;
 	unsigned long flags;
 
-	local_irq_save(flags);
+	local_irq_save(flags); // 关闭中断
 	pcp = &this_cpu_ptr(zone->pageset)->pcp;
-	list = &pcp->lists[migratetype];
-	page = __rmqueue_pcplist(zone,  migratetype, alloc_flags, pcp, list);
+	list = &pcp->lists[migratetype]; // 获取运行当前进程的 CPU 高速缓存列表 pcplist
+	page = __rmqueue_pcplist(zone,  migratetype, alloc_flags, pcp, list); // 从指定迁移类型的 pcplist 中移除一个页面，用于内存分配
 	if (page) {
 		__count_zid_vm_events(PGALLOC, page_zonenum(page), 1);
 		zone_statistics(preferred_zone, zone);
@@ -3438,6 +3467,7 @@ struct page *rmqueue(struct zone *preferred_zone,
 		 */
 		if (!IS_ENABLED(CONFIG_CMA) || alloc_flags & ALLOC_CMA ||
 				migratetype != MIGRATE_MOVABLE) {
+			// 当我们申请一个物理页面（order = 0）时，内核首先会从 CPU 高速缓存列表 pcplist 中直接分配，而不会走伙伴系统，提高内存分配速度
 			page = rmqueue_pcplist(preferred_zone, zone, gfp_flags,
 					migratetype, alloc_flags);
 			goto out;
@@ -3449,7 +3479,7 @@ struct page *rmqueue(struct zone *preferred_zone,
 	 * allocate greater than order-1 page units with __GFP_NOFAIL.
 	 */
 	WARN_ON_ONCE((gfp_flags & __GFP_NOFAIL) && (order > 1));
-	spin_lock_irqsave(&zone->lock, flags);
+	spin_lock_irqsave(&zone->lock, flags); // 加锁并关闭中断，防止并发访问
 
 	do {
 		page = NULL;
@@ -3460,12 +3490,17 @@ struct page *rmqueue(struct zone *preferred_zone,
 		 * request should skip it.
 		 */
 		if (order > 0 && alloc_flags & ALLOC_HARDER) {
-			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC);
+			page = __rmqueue_smallest(zone, order, MIGRATE_HIGHATOMIC); // 如果设置了 ALLOC_HARDER 分配策略，则从伙伴系统的 HIGHATOMIC 迁移类型的 freelist 中获取
 			if (page)
 				trace_mm_page_alloc_zone_locked(page, order, migratetype);
 		}
 		if (!page)
-			page = __rmqueue(zone, order, migratetype, alloc_flags);
+		/*
+			__rmqueue 函数封装的是伙伴系统的整个完整流程，底层调用了 __rmqueue_smallest 函数，
+			它主要实现的是当伙伴系统 free_area 中对应的迁移列表 free_list[MIGRATE_TYPE] 无法满足内存分配需求时，
+			内存分配在伙伴系统中的 fallback 流程。
+		*/
+			page = __rmqueue(zone, order, migratetype, alloc_flags); 
 	} while (page && check_new_pages(page, order));
 	spin_unlock(&zone->lock);
 	if (!page)
@@ -3474,8 +3509,8 @@ struct page *rmqueue(struct zone *preferred_zone,
 				  get_pcppage_migratetype(page));
 
 	__count_zid_vm_events(PGALLOC, page_zonenum(page), 1 << order);
-	zone_statistics(preferred_zone, zone);
-	local_irq_restore(flags);
+	zone_statistics(preferred_zone, zone); // 重新统计内存区域中的相关统计指标
+	local_irq_restore(flags);  // 打开中断
 
 out:
 	/* Separate test+clear to avoid unnecessary atomics */
@@ -3569,6 +3604,7 @@ ALLOW_ERROR_INJECTION(should_fail_alloc_page, TRUE);
 static inline long __zone_watermark_unusable_free(struct zone *z,
 				unsigned int order, unsigned int alloc_flags)
 {
+	// ALLOC_HARDER 的设置表示可以使用 high-atomic 紧急预留内存
 	const bool alloc_harder = (alloc_flags & (ALLOC_HARDER|ALLOC_OOM));
 	long unusable_free = (1 << order) - 1;
 
@@ -3577,16 +3613,17 @@ static inline long __zone_watermark_unusable_free(struct zone *z,
 	 * the high-atomic reserves. This will over-estimate the size of the
 	 * atomic reserve but it avoids a search.
 	 */
+	 // 如果没有设置 ALLOC_HARDER 则不能使用  high_atomic 紧急预留内存
 	if (likely(!alloc_harder))
-		unusable_free += z->nr_reserved_highatomic;
+		unusable_free += z->nr_reserved_highatomic; // 不可用内存的数量需要统计上 high-atomic 这部分内存
 
 #ifdef CONFIG_CMA
 	/* If allocation can't use CMA areas don't use free CMA pages */
-	if (!(alloc_flags & ALLOC_CMA))
-		unusable_free += zone_page_state(z, NR_FREE_CMA_PAGES);
+	if (!(alloc_flags & ALLOC_CMA)) // 如果没有设置 ALLOC_CMA 则表示本次内存分配不能从 CMA 区域获取
+		unusable_free += zone_page_state(z, NR_FREE_CMA_PAGES); // 不可用内存的数量需要统计上 CMA 区域中的空闲内存页
 #endif
 
-	return unusable_free;
+	return unusable_free; // 返回不可用内存的数量，表示本次内存分配不能使用的内存容量
 }
 
 /*
@@ -3599,12 +3636,12 @@ bool __zone_watermark_ok(struct zone *z, unsigned int order, unsigned long mark,
 			 int highest_zoneidx, unsigned int alloc_flags,
 			 long free_pages)
 {
-	long min = mark;
+	long min = mark;     // 保证内存分配顺利进行的最低水位线
 	int o;
 	const bool alloc_harder = (alloc_flags & (ALLOC_HARDER|ALLOC_OOM));
 
 	/* free_pages may go negative - that's OK */
-	free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags);
+	free_pages -= __zone_watermark_unusable_free(z, order, alloc_flags); // 获取真正可用的剩余空闲内存页数量
 
 	if (alloc_flags & ALLOC_HIGH)
 		min -= min / 2;
@@ -3616,10 +3653,11 @@ bool __zone_watermark_ok(struct zone *z, unsigned int order, unsigned long mark,
 		 * the exit path shortly and free memory. Any allocation it
 		 * makes during the free path will be small and short-lived.
 		 */
+		  // 在要进行 OOM 的情况下内存分配会比普通的  ALLOC_HARDER 策略更加努力激进一些，所以这里水位线会降低二分之一
 		if (alloc_flags & ALLOC_OOM)
 			min -= min / 2;
 		else
-			min -= min / 4;
+			min -= min / 4; // ALLOC_HARDER 策略下水位线只会降低四分之一 
 	}
 
 	/*
@@ -3631,10 +3669,14 @@ bool __zone_watermark_ok(struct zone *z, unsigned int order, unsigned long mark,
 		return false;
 
 	/* If this is an order-0 request then the watermark is fine */
+	// 流程走到这里，对应内存分配阶 order = 0 的情况下就已经 OK 了
+    // 剩余空闲内存在水位线之上，那么肯定能够分配一页出来
 	if (!order)
 		return true;
 
 	/* For a high-order request, check at least one suitable page is free */
+	 // 但是对于 high-order 的内存分配，这里还需要近一步检查伙伴系统
+    // 根据伙伴系统内存分配的原理，这里需要检查高阶 free_list 中是否有足够的空闲内存块可供分配 
 	for (o = order; o < MAX_ORDER; o++) {
 		struct free_area *area = &z->free_area[o];
 		int mt;
@@ -3672,7 +3714,7 @@ static inline bool zone_watermark_fast(struct zone *z, unsigned int order,
 {
 	long free_pages;
 
-	free_pages = zone_page_state(z, NR_FREE_PAGES);
+	free_pages = zone_page_state(z, NR_FREE_PAGES); // 获取当前内存区域中所有空闲的物理内存页
 
 	/*
 	 * Fast check for order-0 only. If this fails then the reserves
@@ -3682,15 +3724,19 @@ static inline bool zone_watermark_fast(struct zone *z, unsigned int order,
 		long usable_free;
 		long reserved;
 
+		// 可供本次内存分配使用的符合要求的真实可用内存，初始为 free_pages
+        // free_pages 为空闲内存页的全集,其中也包括了不能为本次内存分配提供内存的空闲内存
 		usable_free = free_pages;
-		reserved = __zone_watermark_unusable_free(z, 0, alloc_flags);
+		reserved = __zone_watermark_unusable_free(z, 0, alloc_flags); // 获取本次不能使用的空闲内存页数量
 
 		/* reserved may over estimate high-atomic reserves. */
 		usable_free -= min(usable_free, reserved);
+		// 如果可用的空闲内存页数量大于内存水位线与预留内存之和
+        // 那么表示物理内存区域中的可用空闲内存能够满足本次内存分配的需要
 		if (usable_free > mark + z->lowmem_reserve[highest_zoneidx])
 			return true;
 	}
-
+	// 进一步检查内存区域伙伴系统中是否有足够的 order 阶的内存块可供分配
 	if (__zone_watermark_ok(z, order, mark, highest_zoneidx, alloc_flags,
 					free_pages))
 		return true;
@@ -3798,9 +3844,9 @@ get_page_from_freelist(gfp_t gfp_mask, unsigned int order, int alloc_flags,
 						const struct alloc_context *ac)
 {
 	struct zoneref *z;
-	struct zone *zone;
-	struct pglist_data *last_pgdat_dirty_limit = NULL;
-	bool no_fallback;
+	struct zone *zone; // 当前遍历到的内存区域 zone 引用
+	struct pglist_data *last_pgdat_dirty_limit = NULL; // 最近遍历的NUMA节点
+	bool no_fallback; // 如果需要避免内存碎片，则 no_fallback = true
 
 retry:
 	/*
@@ -3812,8 +3858,8 @@ retry:
 	for_next_zone_zonelist_nodemask(zone, z, ac->highest_zoneidx,
 					ac->nodemask) {
 		struct page *page;
-		unsigned long mark;
-
+		unsigned long mark;  // 内存分配过程中设定的水位线
+		// 检查内存区域所在 NUMA 节点是否在进程所允许的 CPU 上
 		if (cpusets_enabled() &&
 			(alloc_flags & ALLOC_CPUSET) &&
 			!__cpuset_zone_allowed(zone, gfp_mask))
@@ -3847,6 +3893,8 @@ retry:
 			}
 		}
 
+		// 如果内核设置了避免内存碎片标识，在本地节点无法满足内存分配的情况下(因为需要避免内存碎片)
+        // 这轮循环会遍历 remote 节点（跨NUMA节点）
 		if (no_fallback && nr_online_nodes > 1 &&
 		    zone != ac->preferred_zoneref->zone) {
 			int local_nid;
@@ -3856,14 +3904,19 @@ retry:
 			 * fragmenting fallbacks. Locality is more important
 			 * than fragmentation avoidance.
 			 */
+			 // 如果本地节点分配内存失败是因为避免内存碎片的原因，那么会继续回到本地节点进行 retry 重试同时取消 ALLOC_NOFRAGMENT（允许引入碎片）
 			local_nid = zone_to_nid(ac->preferred_zoneref->zone);
 			if (zone_to_nid(zone) != local_nid) {
+				// 内核认为保证本地的局部性会比避免内存碎片更加重要
 				alloc_flags &= ~ALLOC_NOFRAGMENT;
 				goto retry;
 			}
 		}
 
+		// 获取本次内存分配需要考虑到的内存水位线，快速路径下是 WMARK_LOW, 慢速路径下是 WMARK_MIN
 		mark = wmark_pages(zone, alloc_flags & ALLOC_WMARK_MASK);
+		// 检查当前遍历到的 zone 里剩余的空闲内存容量是否在指定水位线 mark 之上
+        // 剩余内存容量在水位线之下返回 false
 		if (!zone_watermark_fast(zone, order, mark,
 				       ac->highest_zoneidx, alloc_flags,
 				       gfp_mask)) {
@@ -3881,23 +3934,29 @@ retry:
 #endif
 			/* Checked here to keep the fast path fast */
 			BUILD_BUG_ON(ALLOC_NO_WATERMARKS < NR_WMARK);
+			 // 如果本次内存分配策略是忽略内存水位线，那么就在本次遍历到的zone里尝试分配内存
 			if (alloc_flags & ALLOC_NO_WATERMARKS)
 				goto try_this_zone;
-
+			// 如果本次内存分配不能忽略内存水位线的限制，那么就会判断当前 zone 所属 NUMA 节点是否允许进行内存回收
 			if (node_reclaim_mode == 0 ||
 			    !zone_allows_reclaim(ac->preferred_zoneref->zone, zone))
 				continue;
-
+			
+			// 针对当前 zone 所在 NUMA 节点进行内存回收
 			ret = node_reclaim(zone->zone_pgdat, gfp_mask, order);
 			switch (ret) {
 			case NODE_RECLAIM_NOSCAN:
 				/* did not scan */
+				 // 返回该值表示当前 NUMA 节点没有必要进行回收。比如快速分配路径下就不处理页面回收的问题
 				continue;
 			case NODE_RECLAIM_FULL:
 				/* scanned but unreclaimable */
+				 // 返回该值表示通过扫描之后发现当前 NUMA 节点并没有可以回收的内存页
 				continue;
 			default:
 				/* did we reclaim enough */
+				// 该分支表示当前 NUMA 节点已经进行了内存回收操作
+                // zone_watermark_ok 判断内存回收是否回收了足够的内存能否满足内存分配的需要
 				if (zone_watermark_ok(zone, order, mark,
 					ac->highest_zoneidx, alloc_flags))
 					goto try_this_zone;
@@ -3907,9 +3966,12 @@ retry:
 		}
 
 try_this_zone:
+		// 这里就是伙伴系统的入口，rmqueue 函数中封装的就是伙伴系统的核心逻辑
+        // 从伙伴系统中获取内存
 		page = rmqueue(ac->preferred_zoneref->zone, zone, order,
 				gfp_mask, alloc_flags, ac->migratetype);
 		if (page) {
+			// 分配内存成功，初始化内存页 page
 			prep_new_page(page, order, gfp_mask, alloc_flags);
 
 			/*
@@ -4619,22 +4681,30 @@ static inline struct page *
 __alloc_pages_slowpath(gfp_t gfp_mask, unsigned int order,
 						struct alloc_context *ac)
 {
-	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM;
-	const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER;
-	struct page *page = NULL;
-	unsigned int alloc_flags;
-	unsigned long did_some_progress;
+	bool can_direct_reclaim = gfp_mask & __GFP_DIRECT_RECLAIM; // 在慢速内存分配路径中可能会导致内核进行直接内存回收
+	const bool costly_order = order > PAGE_ALLOC_COSTLY_ORDER; // 存请求内存页的数量大于 2 ^ 3 = 8 个内存页时，costly_order = true，后续会影响是否进行 OOM
+	struct page *page = NULL; // 用于指向成功申请的内存
+	unsigned int alloc_flags; // 内存分配标识，后续会根据不同标识进入到不同的内存分配逻辑处理分支
+	unsigned long did_some_progress;  // 后续用于记录直接内存回收了多少内存页
+	// 关于内存整理相关参数
+	/*
+	compact_* 相关的参数用于直接内存整理 direct_compact，内核通常会在直接内存回收 direct_reclaim 之前进行一次 direct_compact，
+	如果经过 direct_compact 整理之后有了足够多的空间内存就不需要进行 direct_reclaim 了。
+	*/
 	enum compact_priority compact_priority;
 	enum compact_result compact_result;
 	int compaction_retries;
-	int no_progress_loops;
+	int no_progress_loops; // 记录重试的次数，超过一定的次数（16次）则内存分配失败
 	unsigned int cpuset_mems_cookie;
-	int reserve_flags;
+	int reserve_flags; // 临时保存调整后的内存分配策略
 
 	/*
 	 * We also sanity check to catch abuse of atomic reserves being used by
 	 * callers that are not in atomic context.
 	 */
+	 // 流程现在来到了慢速内存分配这里，说明快速分配路径已经失败了
+    // 内核需要对 gfp_mask 分配行为掩码做一些修改，修改为一些更可能导致内存分配成功的标识
+    // 因为接下来的直接内存回收非常耗时可能会导致进程阻塞睡眠，不适用原子 __GFP_ATOMIC 内存分配的上下文
 	if (WARN_ON_ONCE((gfp_mask & (__GFP_ATOMIC|__GFP_DIRECT_RECLAIM)) ==
 				(__GFP_ATOMIC|__GFP_DIRECT_RECLAIM)))
 		gfp_mask &= ~__GFP_ATOMIC;
@@ -4662,7 +4732,7 @@ retry_cpuset:
 					ac->highest_zoneidx, ac->nodemask);
 	if (!ac->preferred_zoneref->zone)
 		goto nopage;
-
+	// 唤醒所有的 kswapd 进程异步回收内存
 	if (alloc_flags & ALLOC_KSWAPD)
 		wake_all_kswapds(order, gfp_mask, ac);
 
@@ -4670,6 +4740,10 @@ retry_cpuset:
 	 * The adjusted alloc_flags might result in immediate success, so try
 	 * that first
 	 */
+	 // 此时所有的 kswapd 进程已经被唤醒，正在异步进行内存回收
+    // 之前我们已经在 gfp_to_alloc_flags 方法中重新调整了 alloc_flags
+    // 换成了一套更加激进的内存分配策略，注意此时是在 WMARK_MIN 水位线之上进行内存分配
+    // 调整后的 alloc_flags 很可能会立即成功，因此这里先尝试一下
 	page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
 	if (page)
 		goto got_pg;
@@ -4683,10 +4757,13 @@ retry_cpuset:
 	 * Don't try this for allocations that are allowed to ignore
 	 * watermarks, as the ALLOC_NO_WATERMARKS attempt didn't yet happen.
 	 */
+	 // 对于分配大内存来说 costly_order = true (超过 8 个内存页)，需要首先进行内存整理，这样内核可以避免直接内存回收从而获取更多的连续空闲内存页
+    // 对于需要分配不可移动的高阶内存的情况，也需要先进行内存整理，防止永久内存碎片
 	if (can_direct_reclaim &&
 			(costly_order ||
 			   (order > 0 && ac->migratetype != MIGRATE_MOVABLE))
 			&& !gfp_pfmemalloc_allowed(gfp_mask)) {
+				// 进行直接内存整理，获取更多的连续空闲内存防止内存碎片
 		page = __alloc_pages_direct_compact(gfp_mask, order,
 						alloc_flags, ac,
 						INIT_COMPACT_PRIORITY,
@@ -4725,6 +4802,7 @@ retry_cpuset:
 			 * sync compaction could be very expensive, so keep
 			 * using async compaction.
 			 */
+			 // 同步内存整理开销太大，后续开启异步内存整理
 			compact_priority = INIT_COMPACT_PRIORITY;
 		}
 	}
@@ -4734,6 +4812,9 @@ retry:
 	if (alloc_flags & ALLOC_KSWAPD)
 		wake_all_kswapds(order, gfp_mask, ac);
 
+	// 流程走到这里，说明在 WMARK_MIN 水位线之上也分配内存失败了
+    // 并且经过内存整理之后，内存分配仍然失败，说明当前内存容量已经严重不足
+    // 接下来就需要使用更加激进的非常手段来尝试内存分配（忽略掉内存水位线），继续修改 alloc_flags 保存在 reserve_flags 中
 	reserve_flags = __gfp_pfmemalloc_flags(gfp_mask);
 	if (reserve_flags)
 		alloc_flags = current_alloc_flags(gfp_mask, reserve_flags);
@@ -4743,6 +4824,7 @@ retry:
 	 * ignored. These allocations are high priority and system rather than
 	 * user oriented.
 	 */
+	  // 如果内存分配可以任意跨节点分配（忽略内存分配策略），这里需要重置 nodemask 以及 zonelist。
 	if (!(alloc_flags & ALLOC_CPUSET) || reserve_flags) {
 		ac->nodemask = NULL;
 		ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
@@ -4750,11 +4832,14 @@ retry:
 	}
 
 	/* Attempt with potentially adjusted zonelist and alloc_flags */
+	// 这里使用重新调整的 zonelist 和 alloc_flags 在尝试进行一次内存分配
+    // 注意此次的内存分配是忽略内存水位线的 ALLOC_NO_WATERMARKS
 	page = get_page_from_freelist(gfp_mask, order, alloc_flags, ac);
 	if (page)
 		goto got_pg;
 
 	/* Caller is not willing to reclaim, we can't balance anything */
+	// 在忽略内存水位线的情况下仍然分配失败，现在内核就需要进行直接内存回收了
 	if (!can_direct_reclaim)
 		goto nopage;
 
@@ -4763,18 +4848,21 @@ retry:
 		goto nopage;
 
 	/* Try direct reclaim and then allocating */
+	// 开始直接内存回收
 	page = __alloc_pages_direct_reclaim(gfp_mask, order, alloc_flags, ac,
 							&did_some_progress);
 	if (page)
 		goto got_pg;
 
 	/* Try direct compaction and then allocating */
+	 // 直接内存回收之后仍然无法满足分配需求，则再次进行直接内存整理
 	page = __alloc_pages_direct_compact(gfp_mask, order, alloc_flags, ac,
 					compact_priority, &compact_result);
 	if (page)
 		goto got_pg;
 
 	/* Do not loop if specifically requested */
+	 // 在内存直接回收和整理全部失败之后，如果不允许重试，则只能失败
 	if (gfp_mask & __GFP_NORETRY)
 		goto nopage;
 
@@ -4782,9 +4870,16 @@ retry:
 	 * Do not retry costly high order allocations unless they are
 	 * __GFP_RETRY_MAYFAIL
 	 */
+	 // 后续会触发 OOM 来释放更多的内存，这里需要判断本次内存分配是否需要分配大量的内存页（大于 8 ） costly_order = true
+    // 如果是的话则内核认为即使执行 OOM 也未必会满足这么多的内存页分配需求.
+    // 所以还是直接失败比较好，不再执行 OOM，除非设置 __GFP_RETRY_MAYFAIL
 	if (costly_order && !(gfp_mask & __GFP_RETRY_MAYFAIL))
 		goto nopage;
 
+	// 流程走到这里说明我们已经尝试了所有措施内存依然分配失败了，此时内存已经非常危急了。
+    // 走到这里说明进程允许内核进行重试流程，但在开始重试之前，内核需要判断是否应该进行重试,重试标准：
+    // 1 如果内核已经重试了 MAX_RECLAIM_RETRIES (16) 次仍然失败，则放弃重试执行后续 OOM。
+    // 2 如果内核将所有可选内存区域中的所有可回收页面全部回收之后，仍然无法满足内存的分配，那么放弃重试执行后续 OOM
 	if (should_reclaim_retry(gfp_mask, order, ac, alloc_flags,
 				 did_some_progress > 0, &no_progress_loops))
 		goto retry;
@@ -4795,6 +4890,9 @@ retry:
 	 * implementation of the compaction depends on the sufficient amount
 	 * of free memory (see __compaction_suitable)
 	 */
+	 // 如果内核判断不应进行直接内存回收的重试，这里还需要判断下是否应该进行内存整理的重试。
+    // did_some_progress 表示上次直接内存回收，具体回收了多少内存页
+    // 如果 did_some_progress = 0 则没有必要在进行内存整理重试了，因为内存整理的实现依赖于足够的空闲内存量
 	if (did_some_progress > 0 &&
 			should_compact_retry(ac, order, alloc_flags,
 				compact_result, &compact_priority,
@@ -4803,10 +4901,12 @@ retry:
 
 
 	/* Deal with possible cpuset update races before we start OOM killing */
+	 // 根据 nodemask 中的内存分配策略判断是否应该在进程所允许运行的所有 CPU 关联的 NUMA 节点上重试
 	if (check_retry_cpuset(cpuset_mems_cookie, ac))
 		goto retry_cpuset;
 
 	/* Reclaim has failed us, start killing things */
+	 // 最后的杀手锏，进行 OOM，选择一个得分最高的进程，释放其占用的内存 
 	page = __alloc_pages_may_oom(gfp_mask, order, ac, &did_some_progress);
 	if (page)
 		goto got_pg;
@@ -4818,6 +4918,7 @@ retry:
 		goto nopage;
 
 	/* Retry as long as the OOM killer is making progress */
+	// 只要 oom 产生了作用并释放了内存 did_some_progress > 0 就不断的进行重试
 	if (did_some_progress) {
 		no_progress_loops = 0;
 		goto retry;
@@ -4832,6 +4933,9 @@ nopage:
 	 * Make sure that __GFP_NOFAIL request doesn't leak out and make sure
 	 * we always retry
 	 */
+	 // 流程走到这里表明内核已经尝试了包括 OOM 在内的所有回收内存的动作。
+    // 但是这些措施依然无法满足内存分配的需求，看上去内存分配到这里就应该失败了。
+    // 但是如果设置了 __GFP_NOFAIL 表示不允许内存分配失败，那么接下来就会进入 if 分支进行处理
 	if (gfp_mask & __GFP_NOFAIL) {
 		/*
 		 * All existing users of the __GFP_NOFAIL are blockable, so warn
@@ -4861,10 +4965,13 @@ nopage:
 		 * could deplete whole memory reserves which would just make
 		 * the situation worse
 		 */
+		 // 在 __GFP_NOFAIL 情况下，尝试进行跨 NUMA 节点内存分配
 		page = __alloc_pages_cpuset_fallback(gfp_mask, order, ALLOC_HARDER, ac);
 		if (page)
 			goto got_pg;
-
+		// 在进行内存分配重试流程之前，需要让 CPU 重新调度到其他进程上
+        // 运行一会其他进程，因为毕竟此时内存已经严重不足
+        // 立马重试的话只能浪费过多时间在搜索空闲内存上，导致其他进程处于饥饿状态。
 		cond_resched();
 		goto retry;
 	}
@@ -4880,11 +4987,13 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 		struct alloc_context *ac, gfp_t *alloc_mask,
 		unsigned int *alloc_flags)
 {
-	ac->highest_zoneidx = gfp_zone(gfp_mask);
-	ac->zonelist = node_zonelist(preferred_nid, gfp_mask);
+	ac->highest_zoneidx = gfp_zone(gfp_mask); // 根据 gfp_mask 掩码中的内存区域修饰符获取内存分配最高优先级的内存区域 zone
+	ac->zonelist = node_zonelist(preferred_nid, gfp_mask); // 从 NUMA 节点的备用节点链表中一次性获取允许进行内存分配的所有内存区域
 	ac->nodemask = nodemask;
-	ac->migratetype = gfp_migratetype(gfp_mask);
+	ac->migratetype = gfp_migratetype(gfp_mask); // 从 gfp_mask 掩码中获取页面迁移属性，迁移属性分为：不可迁移，可回收，可迁移。
 
+	// 如果使用 cgroup 将进程绑定限制在了某些 CPU 上，那么内存分配只能在
+   // 这些绑定的 CPU 相关联的 NUMA 节点中进行
 	if (cpusets_enabled()) {
 		*alloc_mask |= __GFP_HARDWALL;
 		/*
@@ -4901,7 +5010,7 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 	fs_reclaim_release(gfp_mask);
 
 	might_sleep_if(gfp_mask & __GFP_DIRECT_RECLAIM);
-
+	// 提前判断本次内存分配是否能够成功，如果不能则尽早失败
 	if (should_fail_alloc_page(gfp_mask, order))
 		return false;
 
@@ -4915,6 +5024,8 @@ static inline bool prepare_alloc_pages(gfp_t gfp_mask, unsigned int order,
 	 * also used as the starting point for the zonelist iterator. It
 	 * may get reset for allocations that ignore memory policies.
 	 */
+	 // 获取最高优先级的内存区域 zone
+    // 后续内存分配则首先会在该内存区域中进行分配
 	ac->preferred_zoneref = first_zones_zonelist(ac->zonelist,
 					ac->highest_zoneidx, ac->nodemask);
 
@@ -4928,32 +5039,37 @@ struct page *
 __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 							nodemask_t *nodemask)
 {
-	struct page *page;
-	unsigned int alloc_flags = ALLOC_WMARK_LOW;
+	struct page *page;  // 用于指向分配成功的内存
+	unsigned int alloc_flags = ALLOC_WMARK_LOW; // 内存区域中的剩余内存需要在 WMARK_LOW 水位线之上才能进行内存分配，否则失败（初次尝试快速内存分配）
 	gfp_t alloc_mask; /* The gfp_t that was actually used for allocation */
-	struct alloc_context ac = { };
+	struct alloc_context ac = { }; // 用于在不同内存分配辅助函数中传递参数
 
 	/*
 	 * There are several places where we assume that the order value is sane
 	 * so bail out early if the request is out of bound.
 	 */
+	 // 检查用于向伙伴系统申请内存容量的分配阶 order 的合法性
+    // 内核定义最大分配阶 MAX_ORDER -1 = 10，也就是说一次最多只能从伙伴系统中申请 1024 个内存页
 	if (unlikely(order >= MAX_ORDER)) {
 		WARN_ON_ONCE(!(gfp_mask & __GFP_NOWARN));
 		return NULL;
 	}
 
-	gfp_mask &= gfp_allowed_mask;
+	gfp_mask &= gfp_allowed_mask; // 表示在内存分配期间进程可以休眠阻塞
 	alloc_mask = gfp_mask;
+	// 初始化 alloc_context，并为接下来的快速内存分配设置相关 gfp
 	if (!prepare_alloc_pages(gfp_mask, order, preferred_nid, nodemask, &ac, &alloc_mask, &alloc_flags))
-		return NULL;
+		return NULL; // 提前判断本次内存分配是否能够成功，如果不能则尽早失败
 
 	/*
 	 * Forbid the first pass from falling back to types that fragment
 	 * memory until all local zones are considered.
 	 */
+	 // 避免内存碎片化的相关分配标识设置，可暂时忽略
 	alloc_flags |= alloc_flags_nofragment(ac.preferred_zoneref->zone, gfp_mask);
 
 	/* First allocation attempt */
+	 // 内存分配快速路径：第一次尝试从底层伙伴系统分配内存，注意此时是在 WMARK_LOW 水位线之上分配内存
 	page = get_page_from_freelist(alloc_mask, order, alloc_flags, &ac);
 	if (likely(page))
 		goto out;
@@ -4973,6 +5089,8 @@ __alloc_pages_nodemask(gfp_t gfp_mask, unsigned int order, int preferred_nid,
 	 */
 	ac.nodemask = nodemask;
 
+	// 在第一次快速内存分配失败之后，说明内存已经不足了，内核需要做更多的工作
+    // 比如通过 kswap 回收内存，或者直接内存回收等方式获取更多的空闲内存以满足内存分配的需求
 	page = __alloc_pages_slowpath(alloc_mask, order, &ac);
 
 out:
@@ -5013,9 +5131,9 @@ EXPORT_SYMBOL(get_zeroed_page);
 static inline void free_the_page(struct page *page, unsigned int order)
 {
 	if (order == 0)		/* Via pcp? */
-		free_unref_page(page);
+		free_unref_page(page); // 如果释放一页的话，则直接释放到 CPU 高速缓存列表 pcplist 中
 	else
-		__free_pages_ok(page, order, FPI_NONE);
+		__free_pages_ok(page, order, FPI_NONE); // 如果释放多页的话，则进入伙伴系统回收这部分内存
 }
 
 void __free_pages(struct page *page, unsigned int order)
@@ -5939,7 +6057,7 @@ static void __build_all_zonelists(void *data)
 	if (self && !node_online(self->node_id)) {
 		build_zonelists(self);
 	} else {
-		for_each_online_node(nid) {
+		for_each_online_node(nid) { // 遍历node初始化pgdat
 			pg_data_t *pgdat = NODE_DATA(nid);
 
 			build_zonelists(pgdat);
@@ -6000,7 +6118,7 @@ void __ref build_all_zonelists(pg_data_t *pgdat)
 	unsigned long vm_total_pages;
 
 	if (system_state == SYSTEM_BOOTING) {
-		build_all_zonelists_init();
+		build_all_zonelists_init(); // 启动时完成zonelists的初始化
 	} else {
 		__build_all_zonelists(pgdat);
 		/* cpuset refresh routine should be here */

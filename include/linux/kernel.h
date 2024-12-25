@@ -69,7 +69,7 @@
  * Rounds @x up to next multiple of @y (which must be a power of 2).
  * To perform arbitrary rounding up, use roundup() below.
  */
-#define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1)
+#define round_up(x, y) ((((x)-1) | __round_mask(x, y))+1) // 向上取整，x是取整的数，y是取整的基数
 /**
  * round_down - round down to next specified power of 2
  * @x: the value to round

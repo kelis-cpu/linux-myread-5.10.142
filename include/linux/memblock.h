@@ -57,9 +57,9 @@ struct memblock_region {
 
 /**
  * struct memblock_type - collection of memory regions of certain type
- * @cnt: number of regions
- * @max: size of the allocated array
- * @total_size: size of all regions
+ * @cnt: number of regions,当前内存块中内存区域的数量
+ * @max: size of the allocated array，所有内存区域的大小
+ * @total_size: size of all regions，内存区域已分配数组的尺寸
  * @regions: array of regions
  * @name: the memory type symbolic name
  */
