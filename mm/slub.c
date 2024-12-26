@@ -4072,15 +4072,17 @@ void *__kmalloc(size_t size, gfp_t flags)
 	struct kmem_cache *s;
 	void *ret;
 
+	// KMALLOC_MAX_CACHE_SIZE 规定 kmalloc 内存池所能管理的内存块最大尺寸，在 slub 实现中是 2页 大小
+    // 如果使用 kmalloc 申请超过 2页 大小的内存，则直接走伙伴系统
 	if (unlikely(size > KMALLOC_MAX_CACHE_SIZE))
-		return kmalloc_large(size, flags);
+		return kmalloc_large(size, flags); // 底层调用alloc_pages直接向伙伴系统申请
 
-	s = kmalloc_slab(size, flags);
+	s = kmalloc_slab(size, flags); // 根据申请内存块的尺寸 size，在 kmalloc_caches 缓存中选择合适尺寸的内存池
 
 	if (unlikely(ZERO_OR_NULL_PTR(s)))
 		return s;
 
-	ret = slab_alloc(s, flags, _RET_IP_);
+	ret = slab_alloc(s, flags, _RET_IP_); // 向选取的 slab cache 申请内存块
 
 	trace_kmalloc(_RET_IP_, ret, size, s->size, flags);
 
@@ -4227,8 +4229,8 @@ void kfree(const void *x)
 	if (unlikely(ZERO_OR_NULL_PTR(x)))
 		return;
 
-	page = virt_to_head_page(x);
-	if (unlikely(!PageSlab(page))) {
+	page = virt_to_head_page(x); // 根据虚拟地址计算出所在物理页
+	if (unlikely(!PageSlab(page))) { // 如果物理页不在slab cache中，直接释放回buddy
 		unsigned int order = compound_order(page);
 
 		BUG_ON(!PageCompound(page));
@@ -4238,6 +4240,7 @@ void kfree(const void *x)
 		__free_pages(page, order);
 		return;
 	}
+	//释放回所在slub中
 	slab_free(page->slab_cache, page, object, NULL, 1, _RET_IP_);
 }
 EXPORT_SYMBOL(kfree);
@@ -4501,8 +4504,8 @@ void __init kmem_cache_init(void)
 	kmem_cache_node = bootstrap(&boot_kmem_cache_node);
 
 	/* Now we can use the kmem_cache to allocate kmalloc slabs */
-	setup_kmalloc_cache_index_table();
-	create_kmalloc_caches(0);
+	setup_kmalloc_cache_index_table(); // 初始化size_index_table
+	create_kmalloc_caches(0); // 创建初始化kmalloc_caches 二维数组
 
 	/* Setup random freelists for each cache */
 	init_freelist_randomization();

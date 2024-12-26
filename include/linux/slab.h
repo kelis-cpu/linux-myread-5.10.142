@@ -253,10 +253,10 @@ static inline void __check_heap_object(const void *ptr, unsigned long n,
  * SLUB directly allocates requests fitting in to an order-1 page
  * (PAGE_SIZE*2).  Larger requests are passed to the page allocator.
  */
-#define KMALLOC_SHIFT_HIGH	(PAGE_SHIFT + 1)
+#define KMALLOC_SHIFT_HIGH	(PAGE_SHIFT + 1) // 最大内存2 ^ 13  = 8KB,两页
 #define KMALLOC_SHIFT_MAX	(MAX_ORDER + PAGE_SHIFT - 1)
 #ifndef KMALLOC_SHIFT_LOW
-#define KMALLOC_SHIFT_LOW	3
+#define KMALLOC_SHIFT_LOW	3 // kmalloc支持最小内存2 ^ 3 = 8字节
 #endif
 #endif
 
@@ -312,6 +312,8 @@ enum kmalloc_cache_type {
 };
 
 #ifndef CONFIG_SLOB
+// 第一维数组用于表示 kmalloc 内存池中的内存来源于哪些物理内存区域中
+// 第二维数组中的元素一共 KMALLOC_SHIFT_HIGH 个，用于存储每种内存块尺寸对应的 slab cache。index和kmalloc_info[]数组中的含义相同，表示对应slab cache内存块尺寸的分配阶。
 extern struct kmem_cache *
 kmalloc_caches[NR_KMALLOC_TYPES][KMALLOC_SHIFT_HIGH + 1];
 
@@ -322,6 +324,8 @@ static __always_inline enum kmalloc_cache_type kmalloc_type(gfp_t flags)
 	 * The most common case is KMALLOC_NORMAL, so test for it
 	 * with a single branch for both flags.
 	 */
+	 // 通常情况下 kmalloc 内存池中的内存都来源于 NORMAL 直接映射区
+    // 如果没有特殊设定，则从 NORMAL 直接映射区里分配
 	if (likely((flags & (__GFP_DMA | __GFP_RECLAIMABLE)) == 0))
 		return KMALLOC_NORMAL;
 
@@ -329,8 +333,11 @@ static __always_inline enum kmalloc_cache_type kmalloc_type(gfp_t flags)
 	 * At least one of the flags has to be set. If both are, __GFP_DMA
 	 * is more important.
 	 */
+	 // DMA 区域中的内存是非常宝贵的，如果明确指定需要从 DMA 区域中分配内存
+    // 则选取 DMA 区域中的 kmalloc 内存池
 	return flags & __GFP_DMA ? KMALLOC_DMA : KMALLOC_RECLAIM;
 #else
+	// 明确指定了从 RECLAIMABLE 区域中获取内存，则选取 RECLAIMABLE 区域中 kmalloc 内存池，该区域中的内存页是可以被回收的，比如：文件页缓存
 	return flags & __GFP_RECLAIMABLE ? KMALLOC_RECLAIM : KMALLOC_NORMAL;
 #endif
 }
@@ -541,8 +548,10 @@ static __always_inline void *kmalloc(size_t size, gfp_t flags)
 #ifndef CONFIG_SLOB
 		unsigned int index;
 #endif
+		// KMALLOC_MAX_CACHE_SIZE 规定 kmalloc 内存池所能管理的内存块最大尺寸，在 slub 实现中是 2页 大小
+    	// 如果使用 kmalloc 申请超过 2页 大小的内存，则直接走伙伴系统
 		if (size > KMALLOC_MAX_CACHE_SIZE)
-			return kmalloc_large(size, flags);
+			return kmalloc_large(size, flags); // 底层调用alloc_pages直接向伙伴系统申请
 #ifndef CONFIG_SLOB
 		index = kmalloc_index(size);
 
