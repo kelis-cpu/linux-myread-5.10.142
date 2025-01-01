@@ -219,7 +219,7 @@ int overcommit_policy_handler(struct ctl_table *, int, void *, size_t *,
 #define nth_page(page,n) pfn_to_page(page_to_pfn((page)) + (n))
 
 /* to align the pointer to the (next) page boundary */
-#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE)
+#define PAGE_ALIGN(addr) ALIGN(addr, PAGE_SIZE) // 向上对齐
 
 /* test whether an address (unsigned long or pointer) is aligned to PAGE_SIZE */
 #define PAGE_ALIGNED(addr)	IS_ALIGNED((unsigned long)(addr), PAGE_SIZE)
@@ -269,7 +269,7 @@ extern unsigned int kobjsize(const void *objp);
 #define VM_DENYWRITE	0x00000800	/* ETXTBSY on write attempts.. */
 #define VM_UFFD_WP	0x00001000	/* wrprotect pages tracking */
 
-#define VM_LOCKED	0x00002000
+#define VM_LOCKED	0x00002000 // 表示该vmarea已经发生缺页故障且被锁定，无法回收
 #define VM_IO           0x00004000	/* Memory mapped I/O or similar */
 
 					/* Used by sys_madvise() */

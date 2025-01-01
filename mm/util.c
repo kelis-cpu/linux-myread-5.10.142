@@ -528,19 +528,26 @@ unsigned long vm_mmap_pgoff(struct file *file, unsigned long addr,
 	unsigned long flag, unsigned long pgoff)
 {
 	unsigned long ret;
-	struct mm_struct *mm = current->mm;
+	struct mm_struct *mm = current->mm; // 获取进程虚拟内存空间
+	// 是否需要为映射的 VMA，提前分配物理内存页，避免后续的缺页
+    // 取决于 flag 是否设置了 MAP_POPULATE 或者 MAP_LOCKED，这里的 populate 表示需要分配物理内存的大小
 	unsigned long populate;
 	LIST_HEAD(uf);
 
 	ret = security_mmap_file(file, prot, flag);
 	if (!ret) {
+		// 对进程虚拟内存空间加写锁保护，防止多线程并发修改
 		if (mmap_write_lock_killable(mm))
 			return -EINTR;
+		// 开始 mmap 内存映射，在进程虚拟内存空间中分配一段 vma，并建立相关映射关系
+        // ret 为映射虚拟内存区域的起始地址
 		ret = do_mmap(file, addr, len, prot, flag, pgoff, &populate,
 			      &uf);
 		mmap_write_unlock(mm);
 		userfaultfd_unmap_complete(mm, &uf);
 		if (populate)
+			// 提前分配物理内存页面，后续访问不会缺页
+            // 为 [ret , ret + populate] 这段虚拟内存立即分配物理内存
 			mm_populate(ret, populate);
 	}
 	return ret;
@@ -912,38 +919,48 @@ EXPORT_SYMBOL_GPL(vm_memory_committed);
  */
 int __vm_enough_memory(struct mm_struct *mm, long pages, int cap_sys_admin)
 {
-	long allowed;
+	long allowed; // OVERCOMMIT_NEVER 模式下允许进程申请的虚拟内存大小
 
-	vm_acct_memory(pages);
+	vm_acct_memory(pages); // 虚拟内存审计字段 vm_committed_as 增加 pages
 
 	/*
 	 * Sometimes we want to use more memory than we have
 	 */
-	if (sysctl_overcommit_memory == OVERCOMMIT_ALWAYS)
+	if (sysctl_overcommit_memory == OVERCOMMIT_ALWAYS) // OVERCOMMIT_ALWAYS 表示无论应用进程申请多大的虚拟内存，内核总是会答应，分配虚拟内存非常的激进
 		return 0;
 
 	if (sysctl_overcommit_memory == OVERCOMMIT_GUESS) {
+		// guess 默认策略下，进程申请的虚拟内存大小不能超过 物理内存总大小和 swap 交换区的总大小之和
 		if (pages > totalram_pages() + total_swap_pages)
 			goto error;
 		return 0;
 	}
 
+	// 进程申请的虚拟内存大小不能超过 vm_commit_limit()，该值也会反应在 /proc/meminfo 中的 CommitLimit 字段中。
+    // 只有采用 OVERCOMMIT_NEVER 模式，CommitLimit 的限制才会生效
+    // allowed =（总物理内存大小 - 大页占用的内存大小） * 50%  + swap 交换区总大小 
 	allowed = vm_commit_limit();
 	/*
 	 * Reserve some for root
 	 */
+	  // cap_sys_admin 表示申请内存的进程拥有 root 权限
 	if (!cap_sys_admin)
+		// 为 root 进程保存一些内存，这样可以保证 root 相关的操作在任何时候都可以顺利进行
+        // 大小为 sysctl_admin_reserve_kbytes，这部分内存普通进程不能申请使用
+        // 可通过 /proc/sys/vm/admin_reserve_kbytes 来配置
 		allowed -= sysctl_admin_reserve_kbytes >> (PAGE_SHIFT - 10);
 
 	/*
 	 * Don't let a single process grow so big a user can't recover
 	 */
 	if (mm) {
+		// 可通过 /proc/sys/vm/user_reserve_kbytes 来配置
+        // 用于在紧急情况下，用户恢复系统，比如系统卡死，用户主动 kill 资源消耗比较大的进程，这个动作需要预留一些 user_reserve 内存
 		long reserve = sysctl_user_reserve_kbytes >> (PAGE_SHIFT - 10);
 
 		allowed -= min_t(long, mm->total_vm / 32, reserve);
 	}
-
+	// Committed_AS （系统中所有进程已经申请的虚拟内存总量 + 本次 mmap 申请的）不可以超过 CommitLimit（allowed）
 	if (percpu_counter_read_positive(&vm_committed_as) < allowed)
 		return 0;
 error:

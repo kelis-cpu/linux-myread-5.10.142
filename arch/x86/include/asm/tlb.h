@@ -35,7 +35,7 @@ static inline void tlb_flush(struct mmu_gather *tlb)
  */
 static inline void __tlb_remove_table(void *table)
 {
-	free_page_and_swap_cache(table);
+	free_page_and_swap_cache(table); // 调用free_pages_and_swap_cache将物理页的引用计数减1 ，引用计数为0时就将这个物理页释放，还给伙伴系统。
 }
 
 #endif /* _ASM_X86_TLB_H */

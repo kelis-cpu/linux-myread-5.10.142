@@ -36,9 +36,9 @@
  *
  * This correct ordering is:
  *
- *  1) unhook page
- *  2) TLB invalidate page
- *  3) free page
+ *  1) unhook page 解除页表映射
+ *  2) TLB invalidate page 刷新tlb
+ *  3) free page 释放物理页面
  *
  * That is, we must never free a page before we have ensured there are no live
  * translations left to it. Otherwise it might be possible to observe (or
@@ -175,10 +175,10 @@
 
 struct mmu_table_batch {
 #ifdef CONFIG_MMU_GATHER_RCU_TABLE_FREE
-	struct rcu_head		rcu;
+	struct rcu_head		rcu; // 用于rcu延迟释放页目录的物理页
 #endif
-	unsigned int		nr;
-	void			*tables[0];
+	unsigned int		nr; // 页目录的物理页收集结构的page数组中页面个数
+	void			*tables[0]; // 页面收集结构的page数组
 };
 
 #define MAX_TABLE_BATCH		\
@@ -221,11 +221,12 @@ extern void tlb_remove_table(struct mmu_gather *tlb, void *table);
  */
 #define MMU_GATHER_BUNDLE	8
 
+// 表示物理页的收集结构，用于收集进程映射到用户空间物理页
 struct mmu_gather_batch {
-	struct mmu_gather_batch	*next;
-	unsigned int		nr;
-	unsigned int		max;
-	struct page		*pages[0];
+	struct mmu_gather_batch	*next; // 用于多批次收集物理页时，连接下一个收集批次结构
+	unsigned int		nr; // 本批次的收集数组的页面个数
+	unsigned int		max; // 本批次手机数组最大的页面数
+	struct page		*pages[0]; // 本批次收集结构的页面数组
 };
 
 #define MAX_GATHER_BATCH	\
@@ -246,21 +247,22 @@ extern bool __tlb_remove_page_size(struct mmu_gather *tlb, struct page *page,
 /*
  * struct mmu_gather is an opaque type used by the mm code for passing around
  * any data needed by arch specific code for tlb_remove_page.
+ * 表示一次mmu收集操作，在每次解除相关虚拟内存区域时使用，使用场景主要是进程退出、execv、munmap
  */
 struct mmu_gather {
-	struct mm_struct	*mm;
+	struct mm_struct	*mm; // 操作哪个进程的虚拟内存
 
 #ifdef CONFIG_MMU_GATHER_TABLE_FREE
-	struct mmu_table_batch	*batch;
+	struct mmu_table_batch	*batch; // 用于收集进程各级页目录的物理页
 #endif
 
-	unsigned long		start;
+	unsigned long		start; //表示操作的开始和结束的虚拟地址
 	unsigned long		end;
 	/*
 	 * we are in the middle of an operation to clear
 	 * a full mm and can make some optimizations
 	 */
-	unsigned int		fullmm : 1;
+	unsigned int		fullmm : 1; // 表示是否操作整个用户地址空间
 
 	/*
 	 * we have performed an operation which
@@ -271,10 +273,10 @@ struct mmu_gather {
 	/*
 	 * we have removed page directories
 	 */
-	unsigned int		freed_tables : 1;
+	unsigned int		freed_tables : 1; // 表示已经释放了相关的页目录
 
 	/*
-	 * at which levels have we cleared entries?
+	 * at which levels have we cleared entries? 表示我们在哪个级别清除了表项
 	 */
 	unsigned int		cleared_ptes : 1;
 	unsigned int		cleared_pmds : 1;
@@ -284,15 +286,15 @@ struct mmu_gather {
 	/*
 	 * tracks VM_EXEC | VM_HUGETLB in tlb_start_vma
 	 */
-	unsigned int		vma_exec : 1;
-	unsigned int		vma_huge : 1;
+	unsigned int		vma_exec : 1; // 表示操作的是否为可执行的VMA
+	unsigned int		vma_huge : 1; // 表示操作的是否为hugetlb的VMA
 
-	unsigned int		batch_count;
+	unsigned int		batch_count; // 表示收集多少个"批次"
 
 #ifndef CONFIG_MMU_GATHER_NO_GATHER
-	struct mmu_gather_batch *active;
-	struct mmu_gather_batch	local;
-	struct page		*__pages[MMU_GATHER_BUNDLE];
+	struct mmu_gather_batch *active; // 表示当前处理的批次
+	struct mmu_gather_batch	local; // 本地批次
+	struct page		*__pages[MMU_GATHER_BUNDLE]; // 本地批次收集的物理页面
 
 #ifdef CONFIG_MMU_GATHER_PAGE_SIZE
 	unsigned int page_size;
@@ -421,9 +423,9 @@ static inline void tlb_flush_mmu_tlbonly(struct mmu_gather *tlb)
 	      tlb->cleared_puds || tlb->cleared_p4ds))
 		return;
 
-	tlb_flush(tlb);
+	tlb_flush(tlb); // 刷tlb，和处理器架构相关
 	mmu_notifier_invalidate_range(tlb->mm, tlb->start, tlb->end);
-	__tlb_reset_range(tlb);
+	__tlb_reset_range(tlb); // 将tlb->start 和tlb->end以及tlb->freed_tables，tlb->cleared_xxx复位
 }
 
 static inline void tlb_remove_page_size(struct mmu_gather *tlb,
@@ -623,9 +625,9 @@ static inline void tlb_flush_p4d_range(struct mmu_gather *tlb,
 #ifndef pte_free_tlb
 #define pte_free_tlb(tlb, ptep, address)			\
 	do {							\
-		tlb_flush_pmd_range(tlb, address, PAGE_SIZE);	\
+		tlb_flush_pmd_range(tlb, address, PAGE_SIZE);	\ // 更新tlb->start和tlb->end， tlb->cleared_pmds = 1
 		tlb->freed_tables = 1;				\
-		__pte_free_tlb(tlb, ptep, address);		\
+		__pte_free_tlb(tlb, ptep, address);		\ // 存放页表的物理页放入页表的积聚结构中
 	} while (0)
 #endif
 

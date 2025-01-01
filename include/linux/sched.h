@@ -762,7 +762,7 @@ struct task_struct {
 	struct mm_struct		*active_mm; // 用户线程：mm == active_mm, 内核线程：前一个运行进程的active_mm值
 
 	/* Per-thread vma caching: */
-	struct vmacache			vmacache;
+	struct vmacache			vmacache; // 最近访问过的VMA数组，利用局部性原理
 
 #ifdef SPLIT_RSS_COUNTING
 	struct task_rss_stat		rss_stat;

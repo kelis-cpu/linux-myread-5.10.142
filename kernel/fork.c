@@ -1106,8 +1106,8 @@ void mmput(struct mm_struct *mm)
 {
 	might_sleep();
 
-	if (atomic_dec_and_test(&mm->mm_users))
-		__mmput(mm);
+	if (atomic_dec_and_test(&mm->mm_users)) // 如果mm->mm_users减1为0时，也就是当前进程是最后一个mm的使用者
+		__mmput(mm); // 释放mm
 }
 EXPORT_SYMBOL_GPL(mmput);
 

@@ -215,10 +215,10 @@ static void check_sync_rss_stat(struct task_struct *task)
 static void free_pte_range(struct mmu_gather *tlb, pmd_t *pmd,
 			   unsigned long addr)
 {
-	pgtable_t token = pmd_pgtable(*pmd);
-	pmd_clear(pmd);
-	pte_free_tlb(tlb, token, addr);
-	mm_dec_nr_ptes(tlb->mm);
+	pgtable_t token = pmd_pgtable(*pmd); // 从相关的pmd表项指针中获得页表
+	pmd_clear(pmd); // 清除pmd页目录中的对应的pmd表项,即是页表指针
+	pte_free_tlb(tlb, token, addr); // 存放页表的物理页放入 页表的积聚结构中
+	mm_dec_nr_ptes(tlb->mm); // 进程使用的页表的物理页统计减1
 }
 
 static inline void free_pmd_range(struct mmu_gather *tlb, pud_t *pud,
@@ -250,8 +250,8 @@ static inline void free_pmd_range(struct mmu_gather *tlb, pud_t *pud,
 		return;
 
 	pmd = pmd_offset(pud, start);
-	pud_clear(pud);
-	pmd_free_tlb(tlb, pmd, start);
+	pud_clear(pud); // 清除pud页目录中的对应的pud表项
+	pmd_free_tlb(tlb, pmd, start); // pmd页目录的物理页放入 页表的积聚结构中
 	mm_dec_nr_pmds(tlb->mm);
 }
 
@@ -390,7 +390,7 @@ void free_pgd_range(struct mmu_gather *tlb,
 void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		unsigned long floor, unsigned long ceiling)
 {
-	while (vma) {
+	while (vma) { // 从起始的vma开始遍历每个vma
 		struct vm_area_struct *next = vma->vm_next;
 		unsigned long addr = vma->vm_start;
 
@@ -398,8 +398,8 @@ void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,
 		 * Hide vma from rmap and truncate_pagecache before freeing
 		 * pgtables
 		 */
-		unlink_anon_vmas(vma);
-		unlink_file_vma(vma);
+		unlink_anon_vmas(vma);  // 解除匿名vma的反向映射关系
+		unlink_file_vma(vma); // 解除文件vma反向映射关系 
 
 		if (is_vm_hugetlb_page(vma)) {
 			hugetlb_free_pgd_range(tlb, addr, vma->vm_end,
@@ -416,7 +416,7 @@ void free_pgtables(struct mmu_gather *tlb, struct vm_area_struct *vma,
 				unlink_file_vma(vma);
 			}
 			free_pgd_range(tlb, addr, vma->vm_end,
-				floor, next ? next->vm_start : ceiling);
+				floor, next ? next->vm_start : ceiling); // 遍历各级页表 
 		}
 		vma = next;
 	}
@@ -1231,22 +1231,22 @@ static unsigned long zap_pte_range(struct mmu_gather *tlb,
 	tlb_change_page_size(tlb, PAGE_SIZE);
 again:
 	init_rss_vec(rss);
-	start_pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
+	start_pte = pte_offset_map_lock(mm, pmd, addr, &ptl); // 根据addr从pmd指向的页表中获得页表项指针，并申请页表的自旋锁 
 	pte = start_pte;
 	flush_tlb_batched_pending(mm);
 	arch_enter_lazy_mmu_mode();
 	do {
-		pte_t ptent = *pte;
-		if (pte_none(ptent))
+		pte_t ptent = *pte; // 获得页表项 
+		if (pte_none(ptent)) // 页表项的内容 为空表示没有映射过，继续下一个虚拟页
 			continue;
 
 		if (need_resched())
 			break;
 
-		if (pte_present(ptent)) {
+		if (pte_present(ptent)) { // 虚拟页相关的物理页在内存中（如没有被换出到swap）
 			struct page *page;
 
-			page = vm_normal_page(vma, addr, ptent);
+			page = vm_normal_page(vma, addr, ptent); // 获得虚拟页相关的物理页 
 			if (unlikely(details) && page) {
 				/*
 				 * unmap_shared_mapping_pages() wants to
@@ -1258,35 +1258,36 @@ again:
 					continue;
 			}
 			ptent = ptep_get_and_clear_full(mm, addr, pte,
-							tlb->fullmm);
+							tlb->fullmm); // 将页表项清空（即是解除了映射关系），并返回原来的页表项的内容 
 			tlb_remove_tlb_entry(tlb, pte, addr);
 			if (unlikely(!page))
 				continue;
 
-			if (!PageAnon(page)) {
-				if (pte_dirty(ptent)) {
-					force_flush = 1;
-					set_page_dirty(page);
+			if (!PageAnon(page)) { // 如果是文件页   
+				if (pte_dirty(ptent)) { // 是脏页
+					force_flush = 1; // 强制刷tlb
+					set_page_dirty(page); // 脏标志传递到page结构 
 				}
 				if (pte_young(ptent) &&
 				    likely(!(vma->vm_flags & VM_SEQ_READ)))
-					mark_page_accessed(page);
+					mark_page_accessed(page); //如果页表项访问标志置位，且是随机访问的vma，则标记页面被访问
 			}
-			rss[mm_counter(page)]--;
-			page_remove_rmap(page, false);
+			rss[mm_counter(page)]--; // 进程的相关rss 做减1记账 
+			page_remove_rmap(page, false); // page->_mapcount--
 			if (unlikely(page_mapcount(page) < 0))
 				print_bad_pte(vma, addr, ptent, page);
-			if (unlikely(__tlb_remove_page(tlb, page))) {
-				force_flush = 1;
-				addr += PAGE_SIZE;
+			if (unlikely(__tlb_remove_page(tlb, page))) { // 将物理页记录到积聚结构中，如果分配不到mmu_gather_batch结构或不支持返回true 
+				force_flush = 1; // 强制刷tlb  
+				addr += PAGE_SIZE;  // 操作下一个虚拟页
 				break;
 			}
-			continue;
+			continue; // 正常情况下，处理下一个虚拟页
 		}
 
-		entry = pte_to_swp_entry(ptent);
+		// 下面处理虚拟页相关的物理页“不在”内存中的情况，可能是交换到swap或者是迁移类型等
+		entry = pte_to_swp_entry(ptent); // 页表项得到  swp_entry  
 		if (is_device_private_entry(entry)) {
-			struct page *page = device_private_entry_to_page(entry);
+			struct page *page = device_private_entry_to_page(entry); //处理设备内存表项
 
 			if (unlikely(details && details->check_mapping)) {
 				/*
@@ -1306,31 +1307,31 @@ again:
 			continue;
 		}
 
-		if (!non_swap_entry(entry)) {
+		if (!non_swap_entry(entry)) { // 非迁移类型的swap_entry 
 			/* Genuine swap entry, hence a private anon page */
 			if (!should_zap_cows(details))
 				continue;
 			rss[MM_SWAPENTS]--;
-		} else if (is_migration_entry(entry)) {
+		} else if (is_migration_entry(entry)) { // 迁移类型的表项
 			struct page *page;
 
-			page = migration_entry_to_page(entry);
+			page = migration_entry_to_page(entry); // 得到对应的物理页 
 			if (details && details->check_mapping &&
 			    details->check_mapping != page_rmapping(page))
 				continue;
 			rss[mm_counter(page)]--;
 		}
-		if (unlikely(!free_swap_and_cache(entry)))
+		if (unlikely(!free_swap_and_cache(entry))) // 释放swap条目
 			print_bad_pte(vma, addr, ptent, NULL);
-		pte_clear_not_present_full(mm, addr, pte, tlb->fullmm);
-	} while (pte++, addr += PAGE_SIZE, addr != end);
+		pte_clear_not_present_full(mm, addr, pte, tlb->fullmm); // 清除虚拟页相关的物理页的页表映射 
+	} while (pte++, addr += PAGE_SIZE, addr != end); // 遍历pmd表项管辖范围内的每一个虚拟页
 
 	add_mm_rss_vec(mm, rss);
 	arch_leave_lazy_mmu_mode();
 
 	/* Do the actual TLB flush before dropping ptl */
 	if (force_flush)
-		tlb_flush_mmu_tlbonly(tlb);
+		tlb_flush_mmu_tlbonly(tlb); // 如果是强制刷tlb，则释放掉本次聚集的物理页 
 	pte_unmap_unlock(start_pte, ptl);
 
 	/*
@@ -1538,7 +1539,7 @@ void unmap_vmas(struct mmu_gather *tlb,
 				start_addr, end_addr);
 	mmu_notifier_invalidate_range_start(&range);
 	for ( ; vma && vma->vm_start < end_addr; vma = vma->vm_next)
-		unmap_single_vma(tlb, vma, start_addr, end_addr, NULL);
+		unmap_single_vma(tlb, vma, start_addr, end_addr, NULL); // 遍历进程多级页表，来找到vma中每一个虚拟页对应的物理页，然后解除虚拟页到物理页的映射关系，最后将物理页放到收集结构中
 	mmu_notifier_invalidate_range_end(&range);
 }
 
@@ -3562,7 +3563,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	 *
 	 * Here we only have mmap_read_lock(mm).
 	 */
-	if (pte_alloc(vma->vm_mm, vmf->pmd))
+	if (pte_alloc(vma->vm_mm, vmf->pmd)) // 分配pte页表
 		return VM_FAULT_OOM;
 
 	/* See the comment in pte_alloc_one_map() */
@@ -3571,7 +3572,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 
 	/* Use the zero-page for reads */
 	if (!(vmf->flags & FAULT_FLAG_WRITE) &&
-			!mm_forbids_zeropage(vma->vm_mm)) {
+			!mm_forbids_zeropage(vma->vm_mm)) { // 异常由读操作触发，并允许使用零页
 		entry = pte_mkspecial(pfn_pte(my_zero_pfn(vmf->address),
 						vma->vm_page_prot));
 		vmf->pte = pte_offset_map_lock(vma->vm_mm, vmf->pmd,
@@ -3592,7 +3593,7 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	}
 
 	/* Allocate our own private page. */
-	if (unlikely(anon_vma_prepare(vma)))
+	if (unlikely(anon_vma_prepare(vma))) // attach一个anon_vma到内存区域
 		goto oom;
 	page = alloc_zeroed_user_highpage_movable(vma, vmf->address); // 从伙伴系统中申请一个匿名页
 	if (!page)
@@ -3607,9 +3608,9 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	 * preceding stores to the page contents become visible before
 	 * the set_pte_at() write.
 	 */
-	__SetPageUptodate(page);
+	__SetPageUptodate(page); // 设置page标志位，PG_uptodate
 
-	entry = mk_pte(page, vma->vm_page_prot);
+	entry = mk_pte(page, vma->vm_page_prot); // 根据vma的权限位和page描述符，生成页表项
 	entry = pte_sw_mkyoung(entry);
 	if (vma->vm_flags & VM_WRITE)
 		entry = pte_mkwrite(pte_mkdirty(entry));
@@ -3633,13 +3634,13 @@ static vm_fault_t do_anonymous_page(struct vm_fault *vmf)
 	}
 
 	inc_mm_counter_fast(vma->vm_mm, MM_ANONPAGES);
-	page_add_new_anon_rmap(page, vma, vmf->address, false); // 建立反向映射关系
-	lru_cache_add_inactive_or_unevictable(page, vma);
+	page_add_new_anon_rmap(page, vma, vmf->address, false); // 建立物理页到虚拟页的反向映射关系
+	lru_cache_add_inactive_or_unevictable(page, vma); // 物理页添加到lru链表
 setpte:
-	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry);
+	set_pte_at(vma->vm_mm, vmf->address, vmf->pte, entry); // 设置页表项
 
 	/* No need to invalidate - it was non-present before */
-	update_mmu_cache(vma, vmf->address, vmf->pte);
+	update_mmu_cache(vma, vmf->address, vmf->pte); // 更新cpu的tlb页表缓存
 unlock:
 	pte_unmap_unlock(vmf->pte, vmf->ptl);
 	return ret;
@@ -4452,7 +4453,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 		}
 	}
 
-	if (!vmf->pte) {
+	if (!vmf->pte) { // 页表项无效
 		if (vma_is_anonymous(vmf->vma))
 			return do_anonymous_page(vmf); // 处理匿名页缺页
 		else
@@ -4460,10 +4461,10 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 
 	if (!pte_present(vmf->orig_pte))
-		return do_swap_page(vmf);
+		return do_swap_page(vmf); // 页不在内存中
 
 	if (pte_protnone(vmf->orig_pte) && vma_is_accessible(vmf->vma))
-		return do_numa_page(vmf);
+		return do_numa_page(vmf); 。// numa自动平衡处理
 
 	vmf->ptl = pte_lockptr(vmf->vma->vm_mm, vmf->pmd);
 	spin_lock(vmf->ptl);
@@ -4474,7 +4475,7 @@ static vm_fault_t handle_pte_fault(struct vm_fault *vmf)
 	}
 	if (vmf->flags & FAULT_FLAG_WRITE) {
 		if (!pte_write(entry))
-			return do_wp_page(vmf); // 子进程缺页处理
+			return do_wp_page(vmf); // 子进程缺页处理，写时复制
 		entry = pte_mkdirty(entry);
 	}
 	entry = pte_mkyoung(entry);
@@ -4521,12 +4522,12 @@ static vm_fault_t __handle_mm_fault(struct vm_area_struct *vma,
 	p4d_t *p4d;
 	vm_fault_t ret;
 
-	pgd = pgd_offset(mm, address);
-	p4d = p4d_alloc(mm, pgd, address);
+	pgd = pgd_offset(mm, address); // 全局页目录项
+	p4d = p4d_alloc(mm, pgd, address); // 查找四级页目录项，没有则创建(申请一页)
 	if (!p4d)
 		return VM_FAULT_OOM;
 
-	vmf.pud = pud_alloc(mm, p4d, address);
+	vmf.pud = pud_alloc(mm, p4d, address); // 查找上级页目录项，没有则创建
 	if (!vmf.pud)
 		return VM_FAULT_OOM;
 retry_pud:
@@ -4553,7 +4554,7 @@ retry_pud:
 		}
 	}
 
-	vmf.pmd = pmd_alloc(mm, vmf.pud, address);
+	vmf.pmd = pmd_alloc(mm, vmf.pud, address); // 查找中级页目录项，没有则创建
 	if (!vmf.pmd)
 		return VM_FAULT_OOM;
 
@@ -4591,7 +4592,7 @@ retry_pud:
 		}
 	}
 
-	return handle_pte_fault(&vmf);
+	return handle_pte_fault(&vmf); // 处理pte页表
 }
 
 /**
@@ -4689,7 +4690,7 @@ vm_fault_t handle_mm_fault(struct vm_area_struct *vma, unsigned long address,
 	if (unlikely(is_vm_hugetlb_page(vma)))
 		ret = hugetlb_fault(vma->vm_mm, vma, address, flags);
 	else
-		ret = __handle_mm_fault(vma, address, flags);
+		ret = __handle_mm_fault(vma, address, flags); // 处理用户空间的页错误异常(用户/内核模式下访问虚拟地址)
 
 	if (flags & FAULT_FLAG_USER) {
 		mem_cgroup_exit_user_fault();

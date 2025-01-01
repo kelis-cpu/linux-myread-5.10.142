@@ -9,9 +9,9 @@
 #define MREMAP_FIXED		2
 #define MREMAP_DONTUNMAP	4
 
-#define OVERCOMMIT_GUESS		0
-#define OVERCOMMIT_ALWAYS		1
-#define OVERCOMMIT_NEVER		2
+#define OVERCOMMIT_GUESS		0 // 默认策略，进程对虚拟内存的申请不能超过物理内存总大小和 swap 交换区的总大小 之和
+#define OVERCOMMIT_ALWAYS		1 // 无论进程申请多大的虚拟内存，只要不超过整个进程虚拟内存空间的大小，内核总会痛快的答应
+#define OVERCOMMIT_NEVER		2 // 严格的规定虚拟内存的申请用量,般情况下为 (总物理内存大小 - 大页占用的内存大小） * 50% + swap 交换区总大小
 
 #define MAP_SHARED	0x01		/* Share changes */
 #define MAP_PRIVATE	0x02		/* Changes are private */

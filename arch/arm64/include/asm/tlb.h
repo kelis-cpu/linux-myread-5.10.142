@@ -62,12 +62,13 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 	 * invalidating the walk-cache, since the ASID allocator won't
 	 * reallocate our ASID without invalidating the entire TLB.
 	 */
-	if (tlb->fullmm) {
+	if (tlb->fullmm) { // 刷整个mm的tlb
 		if (!last_level)
 			flush_tlb_mm(tlb->mm);
 		return;
 	}
 
+	 // 刷一个虚拟内存范围的tlb
 	__flush_tlb_range(&vma, tlb->start, tlb->end, stride,
 			  last_level, tlb_level);
 }
@@ -75,7 +76,7 @@ static inline void tlb_flush(struct mmu_gather *tlb)
 static inline void __pte_free_tlb(struct mmu_gather *tlb, pgtable_t pte,
 				  unsigned long addr)
 {
-	pgtable_pte_page_dtor(pte);
+	pgtable_pte_page_dtor(pte); // 执行释放页表的时候的构造函数，如释放ptlock内存，zone的页表页面统计减1等
 	tlb_remove_table(tlb, pte);
 }
 

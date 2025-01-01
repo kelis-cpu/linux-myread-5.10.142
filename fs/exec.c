@@ -1423,7 +1423,7 @@ void setup_new_exec(struct linux_binprm * bprm)
 	/* Setup things that can depend upon the personality */
 	struct task_struct *me = current;
 
-	arch_pick_mmap_layout(me->mm, &bprm->rlim_stack);
+	arch_pick_mmap_layout(me->mm, &bprm->rlim_stack); // 对文件映射与匿名映射区进行布局
 
 	arch_setup_new_exec();
 

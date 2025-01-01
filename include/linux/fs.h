@@ -450,13 +450,15 @@ int pagecache_write_end(struct file *, struct address_space *mapping,
  */
 struct address_space {
 	struct inode		*host;
-	struct xarray		i_pages;
+	struct xarray		i_pages; // page cache
 	gfp_t			gfp_mask;
 	atomic_t		i_mmap_writable;
 #ifdef CONFIG_READ_ONLY_THP_FOR_FS
 	/* number of thp, only for non-shmem files */
 	atomic_t		nr_thps;
 #endif
+	// 文件与 vma 反向映射的核心数据结构，i_mmap 也是一颗红黑树
+    // 在所有进程的地址空间中，只要与该文件发生映射的 vma 均挂在 i_mmap 中
 	struct rb_root_cached	i_mmap;
 	struct rw_semaphore	i_mmap_rwsem;
 	unsigned long		nrpages;

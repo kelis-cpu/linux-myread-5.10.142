@@ -23,10 +23,10 @@ static bool tlb_next_batch(struct mmu_gather *tlb)
 		return true;
 	}
 
-	if (tlb->batch_count == MAX_GATHER_BATCH_COUNT)
+	if (tlb->batch_count == MAX_GATHER_BATCH_COUNT) // 如果批次数量达到最大值 则返回false
 		return false;
 
-	batch = (void *)__get_free_pages(GFP_NOWAIT | __GFP_NOWARN, 0);
+	batch = (void *)__get_free_pages(GFP_NOWAIT | __GFP_NOWARN, 0); // 向伙伴系统申请一页作为batch
 	if (!batch)
 		return false;
 
@@ -35,7 +35,7 @@ static bool tlb_next_batch(struct mmu_gather *tlb)
 	batch->nr   = 0;
 	batch->max  = MAX_GATHER_BATCH;
 
-	tlb->active->next = batch;
+	tlb->active->next = batch; // 插入到mmu 积聚结构的批次链表中
 	tlb->active = batch;
 
 	return true;
@@ -98,9 +98,9 @@ static void __tlb_remove_table_free(struct mmu_table_batch *batch)
 	int i;
 
 	for (i = 0; i < batch->nr; i++)
-		__tlb_remove_table(batch->tables[i]);
+		__tlb_remove_table(batch->tables[i]); // 释放页表批次 积聚结构中的page数组中每一个物理页
 
-	free_page((unsigned long)batch);
+	free_page((unsigned long)batch); // 释放这个表批次 积聚结构对应的物理页
 }
 
 #ifdef CONFIG_MMU_GATHER_RCU_TABLE_FREE
@@ -158,7 +158,7 @@ static void tlb_remove_table_rcu(struct rcu_head *head)
 
 static void tlb_remove_table_free(struct mmu_table_batch *batch)
 {
-	call_rcu(&batch->rcu, tlb_remove_table_rcu);
+	call_rcu(&batch->rcu, tlb_remove_table_rcu); // rcu延迟调用
 }
 
 #else /* !CONFIG_MMU_GATHER_RCU_TABLE_FREE */
@@ -195,18 +195,18 @@ static void tlb_remove_table_one(void *table)
 
 static void tlb_table_flush(struct mmu_gather *tlb)
 {
-	struct mmu_table_batch **batch = &tlb->batch;
+	struct mmu_table_batch **batch = &tlb->batch; // 获得当前的 页表批次 积聚结构
 
 	if (*batch) {
-		tlb_table_invalidate(tlb);
-		tlb_remove_table_free(*batch);
+		tlb_table_invalidate(tlb); // 刷tlb
+		tlb_remove_table_free(*batch); // 释放页目录物理页
 		*batch = NULL;
 	}
 }
 
 void tlb_remove_table(struct mmu_gather *tlb, void *table)
 {
-	struct mmu_table_batch **batch = &tlb->batch;
+	struct mmu_table_batch **batch = &tlb->batch; // 获得页表的积聚结构
 
 	if (*batch == NULL) {
 		*batch = (struct mmu_table_batch *)__get_free_page(GFP_NOWAIT | __GFP_NOWARN);
@@ -218,9 +218,9 @@ void tlb_remove_table(struct mmu_gather *tlb, void *table)
 		(*batch)->nr = 0;
 	}
 
-	(*batch)->tables[(*batch)->nr++] = table;
-	if ((*batch)->nr == MAX_TABLE_BATCH)
-		tlb_table_flush(tlb);
+	(*batch)->tables[(*batch)->nr++] = table; // 相关的页目录对应的物理页放入 积聚数组中
+	if ((*batch)->nr == MAX_TABLE_BATCH) //加入的物理页达到最大值
+		tlb_table_flush(tlb); // 做一次刷tlb和释放当前已经积聚的页目录的物理页
 }
 
 static inline void tlb_table_init(struct mmu_gather *tlb)
@@ -237,16 +237,17 @@ static inline void tlb_table_init(struct mmu_gather *tlb) { }
 
 static void tlb_flush_mmu_free(struct mmu_gather *tlb)
 {
-	tlb_table_flush(tlb);
+	tlb_table_flush(tlb); // 释放之前积聚的存放各级页目录的物理页
 #ifndef CONFIG_MMU_GATHER_NO_GATHER
-	tlb_batch_pages_flush(tlb);
+	tlb_batch_pages_flush(tlb);  //释放各个批次积聚结构积聚的物理页
 #endif
 }
 
+// gather:收集
 void tlb_flush_mmu(struct mmu_gather *tlb)
 {
-	tlb_flush_mmu_tlbonly(tlb);
-	tlb_flush_mmu_free(tlb);
+	tlb_flush_mmu_tlbonly(tlb); // 刷tlb
+	tlb_flush_mmu_free(tlb); // 释放各个批次积聚结构的物理页
 }
 
 /**
@@ -264,7 +265,7 @@ void tlb_flush_mmu(struct mmu_gather *tlb)
 void tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm,
 			unsigned long start, unsigned long end)
 {
-	tlb->mm = mm;
+	tlb->mm = mm; // 赋值进程的内存描述符
 
 	/* Is it from 0 to ~0? */
 	tlb->fullmm     = !(start | (end+1));
@@ -278,12 +279,12 @@ void tlb_gather_mmu(struct mmu_gather *tlb, struct mm_struct *mm,
 	tlb->batch_count = 0;
 #endif
 
-	tlb_table_init(tlb);
+	tlb_table_init(tlb); // tlb->batch = NULL,表示先不使用多批次收集
 #ifdef CONFIG_MMU_GATHER_PAGE_SIZE
 	tlb->page_size = 0;
 #endif
 
-	__tlb_reset_range(tlb);
+	__tlb_reset_range(tlb); // tlb->start/end、freed_tables/cleared_xxx初始化
 	inc_tlb_flush_pending(tlb->mm);
 }
 
@@ -325,10 +326,10 @@ void tlb_finish_mmu(struct mmu_gather *tlb,
 		tlb->freed_tables = 1;
 	}
 
-	tlb_flush_mmu(tlb);
+	tlb_flush_mmu(tlb); //刷tlb和释放所有积聚的物理页
 
 #ifndef CONFIG_MMU_GATHER_NO_GATHER
-	tlb_batch_list_free(tlb);
+	tlb_batch_list_free(tlb); //释放各批次结构对应的物理页
 #endif
 	dec_tlb_flush_pending(tlb->mm);
 }

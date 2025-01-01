@@ -82,11 +82,13 @@ unsigned long arch_mmap_rnd(void)
 static unsigned long mmap_base(unsigned long rnd, unsigned long task_size,
 			       struct rlimit *rlim_stack)
 {
-	unsigned long gap = rlim_stack->rlim_cur;
+	unsigned long gap = rlim_stack->rlim_cur; // 栈空间大小
+	 // 栈区与映射区之间的间隔为 1M 大小，如果开启了地址随机化，还会加上一个随机偏移 stack_maxrandom_size
 	unsigned long pad = stack_maxrandom_size(task_size) + stack_guard_gap;
 	unsigned long gap_min, gap_max;
 
 	/* Values close to RLIM_INFINITY can overflow. */
+	// gap 在这里的语义是映射区的起始地址 mmap_base 距离进程地址空间的末尾 task_size 的距离
 	if (gap + pad > gap)
 		gap += pad;
 
@@ -94,7 +96,7 @@ static unsigned long mmap_base(unsigned long rnd, unsigned long task_size,
 	 * Top of mmap area (just below the process stack).
 	 * Leave an at least ~128 MB hole with possible stack randomization.
 	 */
-	gap_min = SIZE_128M;
+	gap_min = SIZE_128M;  // gap 的最小值为 128M
 	gap_max = (task_size / 6) * 5;
 
 	if (gap < gap_min)
@@ -108,7 +110,7 @@ static unsigned long mmap_base(unsigned long rnd, unsigned long task_size,
 static unsigned long mmap_legacy_base(unsigned long rnd,
 				      unsigned long task_size)
 {
-	return __TASK_UNMAPPED_BASE(task_size) + rnd;
+	return __TASK_UNMAPPED_BASE(task_size) + rnd; // 进程虚拟空间三分之一处
 }
 
 /*
@@ -119,23 +121,28 @@ static void arch_pick_mmap_base(unsigned long *base, unsigned long *legacy_base,
 		unsigned long random_factor, unsigned long task_size,
 		struct rlimit *rlim_stack)
 {
+	// 对文件映射与匿名映射区进行经典布局，经典布局下映射区的起始地址设置在 mm_struct->mmap_legacy_base
 	*legacy_base = mmap_legacy_base(random_factor, task_size);
 	if (mmap_is_legacy())
 		*base = *legacy_base;
 	else
-		*base = mmap_base(random_factor, task_size, rlim_stack);
+		// 对文件映射与匿名映射区进行新布局，无论在新布局下还是在经典布局下
+        // 映射区的起始地址最终都会设置在 mm_struct->mmap_base
+		*base = mmap_base(random_factor, task_size, rlim_stack); 
 }
 
 void arch_pick_mmap_layout(struct mm_struct *mm, struct rlimit *rlim_stack)
 {
+	//  mmap_is_legacy 函数来判断进程虚拟内存空间布局采用的是经典布局（返回 1）还是新式布局（返回 0）
+	// 经典布局：文件和匿名映射区从低地址往高地址增长；新式布局：从高地址往低地址增长
 	if (mmap_is_legacy())
-		mm->get_unmapped_area = arch_get_unmapped_area;
+		mm->get_unmapped_area = arch_get_unmapped_area; // 经典布局下，映射区分配虚拟内存方法
 	else
-		mm->get_unmapped_area = arch_get_unmapped_area_topdown;
+		mm->get_unmapped_area = arch_get_unmapped_area_topdown; // 新式布局下，映射区分配虚拟内存方法
 
 	arch_pick_mmap_base(&mm->mmap_base, &mm->mmap_legacy_base,
 			arch_rnd(mmap64_rnd_bits), task_size_64bit(0),
-			rlim_stack);
+			rlim_stack); // 映射区布局
 
 #ifdef CONFIG_HAVE_ARCH_COMPAT_MMAP_BASES
 	/*

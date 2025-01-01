@@ -1012,6 +1012,7 @@ out_free_interp:
 
 	/* Do this so that we can load the interpreter, if need be.  We will
 	   change some of these later */
+	// 创建栈，设置  mm->start_stack 栈的起始地址（栈底）
 	retval = setup_arg_pages(bprm, randomize_stack_top(STACK_TOP),
 				 executable_stack);
 	if (retval < 0)

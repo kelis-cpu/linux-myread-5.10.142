@@ -28,9 +28,13 @@
 
 bool can_do_mlock(void)
 {
+	// 内核会限制能够被锁定的内存资源大小，单位为bytes
+    // 这里获取 RLIMIT_MEMLOCK 能够锁定的内存资源，如果为 0 ，则不能够锁定内存了。
+    // 我们可以通过修改 /etc/security/limits.conf 文件中的 memlock 相关配置项
+    // 来调整能够被锁定的内存资源配额，设置为 unlimited 表示不对锁定内存进行限制
 	if (rlimit(RLIMIT_MEMLOCK) != 0)
 		return true;
-	if (capable(CAP_IPC_LOCK))
+	if (capable(CAP_IPC_LOCK)) // 检查内核是否允许 mlock ，mlockall 等内存锁定操作
 		return true;
 	return false;
 }

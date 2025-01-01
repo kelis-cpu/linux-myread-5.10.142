@@ -200,6 +200,8 @@ struct signal_struct {
 	 * protect this instead of the siglock, because they really
 	 * have no need to disable irqs.
 	 */
+	 // 进程相关的资源限制，相关的资源限制以数组的形式组织在 rlim 中
+  // RLIMIT_MEMLOCK 下标对应的是进程能够锁定的内存资源，单位为bytes
 	struct rlimit rlim[RLIM_NLIMITS];
 
 #ifdef CONFIG_BSD_PROCESS_ACCT

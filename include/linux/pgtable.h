@@ -102,6 +102,7 @@ static inline pud_t *pud_offset(p4d_t *p4d, unsigned long address)
 #define pud_offset pud_offset
 #endif
 
+// 获取全局页目录项索引
 static inline pgd_t *pgd_offset_pgd(pgd_t *pgd, unsigned long address)
 {
 	return (pgd + pgd_index(address));

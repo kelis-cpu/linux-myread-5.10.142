@@ -320,7 +320,7 @@ static inline bool is_stack_mapping(vm_flags_t flags)
 }
 
 /*
- * Data area - private, writable, not stack
+ * Data area - private, writable, not stack // 本次需要映射的虚拟内存区域是否是私有，可写的（数据区）
  */
 static inline bool is_data_mapping(vm_flags_t flags)
 {

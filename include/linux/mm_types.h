@@ -316,9 +316,9 @@ struct vm_area_struct {
 					   within vm_mm. */
 
 	/* linked list of VM areas per task, sorted by address */
-	struct vm_area_struct *vm_next, *vm_prev;
+	struct vm_area_struct *vm_next, *vm_prev;  // vma 在 mm_struct->mmap 双向链表中的前驱节点和后继节点
 
-	struct rb_node vm_rb;
+	struct rb_node vm_rb; // vma 在 mm_struct->mm_rb 红黑树中的节点
 
 	/*
 	 * Largest free memory gap in bytes to the left of this VMA.
@@ -326,6 +326,8 @@ struct vm_area_struct {
 	 * VMAs below us in the VMA rbtree and its ->vm_prev. This helps
 	 * get_unmapped_area find a free area of the right size.
 	 */
+	 // 在当前 vma 的红黑树左子树中的所有节点 vma （包括当前 vma）
+    // 这个集合中的 vma 与其 vm_prev 之间最大的虚拟内存地址 gap （单位字节）保存在 rb_subtree_gap 字段中
 	unsigned long rb_subtree_gap;
 
 	/* Second cache line starts here. */
@@ -391,26 +393,27 @@ struct core_state {
 };
 
 struct kioctx_table;
+// 进程虚拟内存空间描述符
 struct mm_struct {
 	struct {
-		struct vm_area_struct *mmap;		/* list of VMAs */
-		struct rb_root mm_rb;
+		struct vm_area_struct *mmap;		/* list of VMAs */  // 串联组织进程空间中所有的 VMA  的双向链表 
+		struct rb_root mm_rb; // 管理进程空间中所有 VMA 的红黑树
 		u64 vmacache_seqnum;                   /* per-thread vmacache */
 #ifdef CONFIG_MMU
 		unsigned long (*get_unmapped_area) (struct file *filp,
 				unsigned long addr, unsigned long len,
-				unsigned long pgoff, unsigned long flags);
+				unsigned long pgoff, unsigned long flags); // 负责为进程分配虚拟内存
 #endif
-		unsigned long mmap_base;	/* base of mmap area */
-		unsigned long mmap_legacy_base;	/* base of mmap area in bottom-up allocations */
+		unsigned long mmap_base;	/* base of mmap area */ // 文件映射与匿名映射区的起始地址，无论在经典布局下还是在新布局下，起始地址最终都会设置在这里
+		unsigned long mmap_legacy_base;	/* base of mmap area in bottom-up allocations */  // 文件映射与匿名映射区在经典布局下的起始地址
 #ifdef CONFIG_HAVE_ARCH_COMPAT_MMAP_BASES
 		/* Base adresses for compatible mmap() */
 		unsigned long mmap_compat_base;
 		unsigned long mmap_compat_legacy_base;
 #endif
-		unsigned long task_size;	/* size of task vm space */
-		unsigned long highest_vm_end;	/* highest vma end address */
-		pgd_t * pgd;
+		unsigned long task_size;	/* size of task vm space */ // 进程虚拟内存空间与内核空间的分界线（也是用户空间的结束地址）
+		unsigned long highest_vm_end;	/* highest vma end address */  // 当前进程虚拟内存空间中，地址最高的一个 VMA 的结束地址位置
+		pgd_t * pgd; // 页目录基址
 
 #ifdef CONFIG_MEMBARRIER
 		/**
@@ -484,10 +487,10 @@ struct mm_struct {
 		unsigned long hiwater_rss; /* High-watermark of RSS usage */
 		unsigned long hiwater_vm;  /* High-water virtual memory usage */
 
-		unsigned long total_vm;	   /* Total pages mapped */
+		unsigned long total_vm;	   /* Total pages mapped */ // 进程地址空间中所有已经映射的虚拟内存页总数
 		unsigned long locked_vm;   /* Pages that have PG_mlocked set */
 		atomic64_t    pinned_vm;   /* Refcount permanently increased */
-		unsigned long data_vm;	   /* VM_WRITE & ~VM_SHARED & ~VM_STACK */
+		unsigned long data_vm;	   /* VM_WRITE & ~VM_SHARED & ~VM_STACK */ // 进程地址空间中所有私有，可写的虚拟内存页总数
 		unsigned long exec_vm;	   /* VM_EXEC & ~VM_WRITE & ~VM_STACK */
 		unsigned long stack_vm;	   /* VM_STACK */
 		unsigned long def_flags;
@@ -502,7 +505,8 @@ struct mm_struct {
 		spinlock_t arg_lock; /* protect the below fields */
 
 		unsigned long start_code, end_code, start_data, end_data;
-		unsigned long start_brk, brk, start_stack;
+		unsigned long start_brk, brk;
+		unsigned long start_stack;  // 用户空间中，栈顶位置
 		unsigned long arg_start, arg_end, env_start, env_end;
 
 		unsigned long saved_auxv[AT_VECTOR_SIZE]; /* for /proc/PID/auxv */
