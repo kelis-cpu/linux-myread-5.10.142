@@ -1826,7 +1826,7 @@ int import_single_range(int rw, void __user *buf, size_t len,
 {
 	if (len > MAX_RW_COUNT)
 		len = MAX_RW_COUNT;
-	if (unlikely(!access_ok(buf, len)))
+	if (unlikely(!access_ok(buf, len))) // 检查[buf, buf + len]是否超过addr_limit
 		return -EFAULT;
 
 	iov->iov_base = buf;

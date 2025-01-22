@@ -4817,6 +4817,8 @@ int default_wake_function(wait_queue_entry_t *curr, unsigned mode, int wake_flag
 			  void *key)
 {
 	WARN_ON_ONCE(IS_ENABLED(CONFIG_SCHED_DEBUG) && wake_flags & ~WF_SYNC);
+	//  try_to_wake_up 函数传入的task_struct参数是curr->private，这就是当时因为 Socket 接收队列没有数据而被阻塞的线程对象。
+	// 当这个函数执行完的时，在 Socket 上因等待数据而被阻塞的线程会被推入可运行队列里。
 	return try_to_wake_up(curr->private, mode, wake_flags);
 }
 EXPORT_SYMBOL(default_wake_function);

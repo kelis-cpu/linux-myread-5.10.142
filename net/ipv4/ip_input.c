@@ -190,46 +190,52 @@ void ip_protocol_deliver_rcu(struct net *net, struct sk_buff *skb, int protocol)
 	int raw, ret;
 
 resubmit:
-	raw = raw_local_deliver(skb, protocol);
-
+	raw = raw_local_deliver(skb, protocol); // 进行原始数据包的本地传递
+	// 根据协议号 protocol 从 inet_protos 数组中获取对应的协议处理函数
 	ipprot = rcu_dereference(inet_protos[protocol]);
 	if (ipprot) {
 		if (!ipprot->no_policy) {
+			 // 检查是否需要进行安全策略检查
 			if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
-				kfree_skb(skb);
+				kfree_skb(skb);  // 未通过安全策略检查，释放数据包并返回
 				return;
 			}
-			nf_reset_ct(skb);
+			nf_reset_ct(skb); // 重置数据包的连接追踪信息
 		}
+		 // 调用相应的协议处理函数，如 TCP 协议调用 tcp_v4_rcv(skb)
 		ret = INDIRECT_CALL_2(ipprot->handler, tcp_v4_rcv, udp_rcv,
 				      skb);
 		if (ret < 0) {
-			protocol = -ret;
+			protocol = -ret; // 如果失败，需要重新提交数据包给另一个协议处理函数
 			goto resubmit;
 		}
 		__IP_INC_STATS(net, IPSTATS_MIB_INDELIVERS);
 	} else {
+		 // 未找到协议处理函数且数据包不是原始数据包
 		if (!raw) {
 			if (xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) {
 				__IP_INC_STATS(net, IPSTATS_MIB_INUNKNOWNPROTOS);
+				 // 安全策略检查通过，发送 ICMP 目的不可达消息
 				icmp_send(skb, ICMP_DEST_UNREACH,
 					  ICMP_PROT_UNREACH, 0);
 			}
-			kfree_skb(skb);
+			kfree_skb(skb);  // 释放数据包
 		} else {
 			__IP_INC_STATS(net, IPSTATS_MIB_INDELIVERS);
-			consume_skb(skb);
+			consume_skb(skb); // 释放数据包
 		}
 	}
 }
 
 static int ip_local_deliver_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
-	__skb_pull(skb, skb_network_header_len(skb));
+	__skb_pull(skb, skb_network_header_len(skb)); // 移动数据指针，将 skb 的偏移设置为网络头部的长度
 
-	rcu_read_lock();
+	rcu_read_lock();  // 锁定 RCU（Read-Copy-Update）机制，以确保数据包处理期间的数据一致性。
+	// 使用 IP 协议号调用 ip_protocol_deliver_rcu 函数进行数据包的处理
+    // 这行代码使用 IP 协议号（从 IP 头部获取）调用 ip_protocol_deliver_rcu 函数来处理数据包。该函数将根据协议号选择适当的处理方式，将数据包传递给相应的协议处理函数。
 	ip_protocol_deliver_rcu(net, skb, ip_hdr(skb)->protocol);
-	rcu_read_unlock();
+	rcu_read_unlock(); //解锁 RCU，释放对数据包的访问锁定。
 
 	return 0;
 }
@@ -244,11 +250,12 @@ int ip_local_deliver(struct sk_buff *skb)
 	 */
 	struct net *net = dev_net(skb->dev);
 
-	if (ip_is_fragment(ip_hdr(skb))) {
-		if (ip_defrag(net, skb, IP_DEFRAG_LOCAL_DELIVER))
+	if (ip_is_fragment(ip_hdr(skb))) { // 检查是否是分片
+		if (ip_defrag(net, skb, IP_DEFRAG_LOCAL_DELIVER)) // 分片重组
 			return 0;
 	}
-
+	// 调用 NF_HOOK 宏将数据包传递给 Netfilter 框架中的 NF_INET_LOCAL_IN 钩子，以进行进一步处理。
+	// 如果数据包没有被 Netfilter 过滤掉，那么执行 ip_local_deliver_finish 函数继续处理 skb
 	return NF_HOOK(NFPROTO_IPV4, NF_INET_LOCAL_IN,
 		       net, NULL, skb, skb->dev, NULL,
 		       ip_local_deliver_finish);
@@ -311,22 +318,27 @@ static bool ip_can_use_hint(const struct sk_buff *skb, const struct iphdr *iph,
 
 INDIRECT_CALLABLE_DECLARE(int udp_v4_early_demux(struct sk_buff *));
 INDIRECT_CALLABLE_DECLARE(int tcp_v4_early_demux(struct sk_buff *));
+// 如果开启了 ip_early_demux（早期解复用），这是一项优化，为了 TCP 和 UDP 可以提前获得 skb 的 dst_entry（目标入口）；
+// 当 skb 为 TCP 报文并且开启了 tcp_early_demux 选项，则调用 tcp_v4_early_demux 函数，根据 skb 的源地址、目的地址等信息从 ESTABLISHED 连接列表中找到对应的 Socket，把 Socket 中缓存的 sk_rx_dst（struct dst_entry）设置到 skb->dst 中。还会将 Socket 的 struct sock 指针设置到 skb->sk，这样 TCP 层就不用重复查连接列表了；
+// 当 skb 为 UDP 报文并且开启了 udp_early_demux 选项，则调用 udp_v4_early_demux 函数，拿 skb 的 UDP 头信息在 UDP 「解复用表」中寻找 Socket，如果有，把 Socket 中缓存的 dst_entry 设置到 skb->dst；
+// 如果没开启 ip_early_demux 或者开启了上步中没有完成对 skb->dst 的设置，那么就需要调用 ip_route_input_noref 函数去「路由子系统」查询来获得 skb 的 dst_entry，这个过程比较复杂。
 static int ip_rcv_finish_core(struct net *net, struct sock *sk,
 			      struct sk_buff *skb, struct net_device *dev,
 			      const struct sk_buff *hint)
 {
+	//声明了指向 iph 的指针，它指向 skb 中的 IP 数据报头。还声明了整型变量 err 和 drop_reason，用于存储错误码和丢弃原因。
 	const struct iphdr *iph = ip_hdr(skb);
 	int (*edemux)(struct sk_buff *skb);
 	struct rtable *rt;
 	int err;
 
-	if (ip_can_use_hint(skb, iph, hint)) {
+	if (ip_can_use_hint(skb, iph, hint)) { // 检查是否可以使用 hint 进行路由选择，如果可能，使用 hint 进行路由选择
 		err = ip_route_use_hint(skb, iph->daddr, iph->saddr, iph->tos,
 					dev, hint);
 		if (unlikely(err))
 			goto drop_error;
 	}
-
+	// 检查是否启用了早期解复用（early demultiplexing）选项，且 dst_entry(目标入口)为空，且没有与之关联的套接字（skb->sk），且数据包不是一个 IP 分片。
 	if (net->ipv4.sysctl_ip_early_demux &&
 	    !skb_dst(skb) &&
 	    !skb->sk &&
@@ -336,6 +348,7 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
 
 		ipprot = rcu_dereference(inet_protos[protocol]);
 		if (ipprot && (edemux = READ_ONCE(ipprot->early_demux))) {
+			// 根据ip头协议字段分别处理tcp和udp
 			err = INDIRECT_CALL_2(edemux, tcp_v4_early_demux,
 					      udp_v4_early_demux, skb);
 			if (unlikely(err))
@@ -349,7 +362,9 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
 	 *	Initialise the virtual path cache for the packet. It describes
 	 *	how the packet travels inside Linux networking.
 	 */
+	 // 检查数据包的目的地址 dst_entry dst 是否有效。
 	if (!skb_valid_dst(skb)) {
+		// 如果目的地址 dst_entry dst 为空，即找不到与之对应的路由表项，将调用 ip_route_input_noref 函数来进行路由选择，并为数据包设置目的地址 dst_entry dst。
 		err = ip_route_input_noref(skb, iph->daddr, iph->saddr,
 					   iph->tos, dev);
 		if (unlikely(err))
@@ -358,6 +373,7 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
 
 #ifdef CONFIG_IP_ROUTE_CLASSID
 	if (unlikely(skb_dst(skb)->tclassid)) {
+		// 如果系统启用了 IP 路由分类（ip route classid）功能，并且数据包的目的地缓冲区（skb_dst）的 tclassid 字段非零，将对分类统计信息进行更新。
 		struct ip_rt_acct *st = this_cpu_ptr(ip_rt_acct);
 		u32 idx = skb_dst(skb)->tclassid;
 		st[idx&0xFF].o_packets++;
@@ -366,17 +382,20 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
 		st[(idx>>16)&0xFF].i_bytes += skb->len;
 	}
 #endif
-
+	// 检查 IP 数据报头的 IHL 字段（即 IP 头部长度）是否大于 5，并调用 ip_rcv_options 函数来处理 IP 选项字段。
 	if (iph->ihl > 5 && ip_rcv_options(skb, dev))
-		goto drop;
+		goto drop; // 如果处理过程中发生错误，将跳转到 drop 标签处，丢弃数据包。
 
-	rt = skb_rtable(skb);
+	rt = skb_rtable(skb); // 获取数据包的路由表项（rt）并检查其类型。
 	if (rt->rt_type == RTN_MULTICAST) {
+		// 如果路由表项类型是多播（RTN_MULTICAST），则更新多播接收统计信息。
 		__IP_UPD_PO_STATS(net, IPSTATS_MIB_INMCAST, skb->len);
 	} else if (rt->rt_type == RTN_BROADCAST) {
+		// 如果路由表项类型是广播（RTN_BROADCAST），则更新广播接收统计信息。
 		__IP_UPD_PO_STATS(net, IPSTATS_MIB_INBCAST, skb->len);
 	} else if (skb->pkt_type == PACKET_BROADCAST ||
 		   skb->pkt_type == PACKET_MULTICAST) {
+			// 如果数据包的包类型是广播或多播，还会进行额外的处理。
 		struct in_device *in_dev = __in_dev_get_rcu(dev);
 
 		/* RFC 1122 3.3.6:
@@ -399,13 +418,13 @@ static int ip_rcv_finish_core(struct net *net, struct sock *sk,
 			goto drop;
 	}
 
-	return NET_RX_SUCCESS;
+	return NET_RX_SUCCESS; // 函数返回 NET_RX_SUCCESS 或 NET_RX_DROP，表示数据包的处理结果。
 
 drop:
-	kfree_skb(skb);
+	kfree_skb(skb); // 如果数据包被丢弃，将使用 kfree_skb_reason 函数释放数据包，并附带丢弃的原因。
 	return NET_RX_DROP;
 
-drop_error:
+drop_error: // 路由选择失败。
 	if (err == -EXDEV)
 		__NET_INC_STATS(net, LINUX_MIB_IPRPFILTER);
 	goto drop;
@@ -419,13 +438,16 @@ static int ip_rcv_finish(struct net *net, struct sock *sk, struct sk_buff *skb)
 	/* if ingress device is enslaved to an L3 master device pass the
 	 * skb to its handler for processing
 	 */
+	 // 如果入口设备被绑定到一个 L3 主设备上，将把 skb 传递给该设备的处理程序进行处理。
 	skb = l3mdev_ip_rcv(skb);
 	if (!skb)
-		return NET_RX_SUCCESS;
-
-	ret = ip_rcv_finish_core(net, sk, skb, dev, NULL);
+		return NET_RX_SUCCESS; // 意味着该数据包由 L3 主设备处理
+	// 主要逻辑：
+	// 一是调用 ip_rcv_finish_core 函数完成对 skb->dst_entry 的设置;
+	// 二是调用 dst_input 函数，根据上一步设置的 skb->dst_entry 来跳到下一个处理该 skb 的函数。
+	ret = ip_rcv_finish_core(net, sk, skb, dev, NULL); // sk为null
 	if (ret != NET_RX_DROP)
-		ret = dst_input(skb);
+		ret = dst_input(skb); // 递交传输层
 	return ret;
 }
 
@@ -532,13 +554,13 @@ int ip_rcv(struct sk_buff *skb, struct net_device *dev, struct packet_type *pt,
 {
 	struct net *net = dev_net(dev);
 
-	skb = ip_rcv_core(skb, net);
+	skb = ip_rcv_core(skb, net); // 执行各种检查
 	if (skb == NULL)
 		return NET_RX_DROP;
 
 	return NF_HOOK(NFPROTO_IPV4, NF_INET_PRE_ROUTING,
 		       net, NULL, skb, dev, NULL,
-		       ip_rcv_finish);
+		       ip_rcv_finish); // Netfilter 规则过滤和修改
 }
 
 static void ip_sublist_rcv_finish(struct list_head *head)

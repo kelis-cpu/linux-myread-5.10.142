@@ -21,7 +21,7 @@
 #include <linux/types.h>
 #include <asm/byteorder.h>
 #include <linux/socket.h>
-
+// tcp首部
 struct tcphdr {
 	__be16	source;
 	__be16	dest;

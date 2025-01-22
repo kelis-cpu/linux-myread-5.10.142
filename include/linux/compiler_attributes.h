@@ -270,7 +270,7 @@
  *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-used-function-attribute
  *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Variable-Attributes.html#index-used-variable-attribute
  */
-#define __used                          __attribute__((__used__))
+#define __used                          __attribute__((__used__)) // 告诉编译器这个静态符号在编译的时候即使没有使用到也要保留这个符号。
 
 /*
  *   gcc: https://gcc.gnu.org/onlinedocs/gcc/Common-Function-Attributes.html#index-weak-function-attribute

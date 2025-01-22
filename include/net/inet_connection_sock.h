@@ -30,6 +30,7 @@ struct tcp_congestion_ops;
 /*
  * Pointers to address related TCP functions
  * (i.e. things that depend on the address family)
+ * 该结构封装了一组与传输层有关的操作集,包括向网络层发送的接口、传输层的setsockopt接  口等。
  */
 struct inet_connection_sock_af_ops {
 	int	    (*queue_xmit)(struct sock *sk, struct sk_buff *skb, struct flowi *fl);
@@ -54,7 +55,7 @@ struct inet_connection_sock_af_ops {
 };
 
 /** inet_connection_sock - INET connection oriented sock
- *
+ * 它是所有面向传输控制块的表示。其在inet_sock的基础上,增加了有关连接,确认,重传等成员。
  * @icsk_accept_queue:	   FIFO of established children
  * @icsk_bind_hash:	   Bind node
  * @icsk_timeout:	   Timeout
@@ -134,7 +135,7 @@ struct inet_connection_sock {
 	u32			  icsk_probes_tstamp;
 	u32			  icsk_user_timeout;
 
-	u64			  icsk_ca_priv[104 / sizeof(u64)];
+	u64			  icsk_ca_priv[104 / sizeof(u64)]; /* 拥塞控制算法私有空间 */
 #define ICSK_CA_PRIV_SIZE      (13 * sizeof(u64))
 };
 

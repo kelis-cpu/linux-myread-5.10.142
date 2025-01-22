@@ -155,7 +155,7 @@ static int smpboot_thread_fn(void *data)
 			continue;
 		}
 
-		if (!ht->thread_should_run(td->cpu)) {
+		if (!ht->thread_should_run(td->cpu)) { // 判断是否执行中断函数，like：如果数据包到来，硬中断设置了pending标志，则进入软中断处理run_ksoftirqd()
 			preempt_enable_no_resched();
 			schedule();
 		} else {
@@ -166,6 +166,7 @@ static int smpboot_thread_fn(void *data)
 	}
 }
 
+// 当ksoftirad被创建出来以后,它就会进入自己的线程循环函数ksoftirqd_should_run和run_ksoftirqd了。
 static int
 __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 {
@@ -175,14 +176,14 @@ __smpboot_create_thread(struct smp_hotplug_thread *ht, unsigned int cpu)
 	if (tsk)
 		return 0;
 
-	td = kzalloc_node(sizeof(*td), GFP_KERNEL, cpu_to_node(cpu));
+	td = kzalloc_node(sizeof(*td), GFP_KERNEL, cpu_to_node(cpu)); // 创建smpboot_thread_data
 	if (!td)
 		return -ENOMEM;
 	td->cpu = cpu;
 	td->ht = ht;
 
 	tsk = kthread_create_on_cpu(smpboot_thread_fn, td, cpu,
-				    ht->thread_comm);
+				    ht->thread_comm); // 线程函数：run_ksoftirqd(softirq.c:static struct smp_hotplug_thread softirq_threads)
 	if (IS_ERR(tsk)) {
 		kfree(td);
 		return PTR_ERR(tsk);

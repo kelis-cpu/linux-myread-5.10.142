@@ -46,8 +46,9 @@
 struct fib_nh;
 struct fib_info;
 struct uncached_list;
+// ipv4路由缓存结构体
 struct rtable {
-	struct dst_entry	dst;
+	struct dst_entry	dst; // 存储缓存路由项中独立于协议的信息
 
 	int			rt_genid;
 	unsigned int		rt_flags;

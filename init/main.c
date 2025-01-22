@@ -1227,7 +1227,7 @@ int __init_or_module do_one_initcall(initcall_t fn)
 	return ret;
 }
 
-
+// __initcall##level##*start所存储的函数指针就是开发者用xxx_initcall()宏添加的函数，对应".initcall*##level##.init"段。
 extern initcall_entry_t __initcall_start[];
 extern initcall_entry_t __initcall0_start[];
 extern initcall_entry_t __initcall1_start[];
@@ -1283,7 +1283,8 @@ static void __init do_initcall_level(int level, char *command_line)
 	for (fn = initcall_levels[level]; fn < initcall_levels[level+1]; fn++)
 		do_one_initcall(initcall_from_entry(fn));
 }
-
+// 遍历initcall_levels[level]中的每个函数指针,initcall_levels[level]实际上是对应的__initcall##level##_start指针变量，
+// 然后依次取出__initcall##level##_start指向地址存储的每个函数指针，并调用do_one_initcall(*fn)，实际上就是执行当前函数。
 static void __init do_initcalls(void)
 {
 	int level;

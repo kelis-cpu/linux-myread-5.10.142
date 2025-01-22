@@ -718,7 +718,7 @@ struct sk_buff {
 			struct sk_buff		*prev;
 
 			union {
-				struct net_device	*dev;
+				struct net_device	*dev; // 与该包关联的网络设备
 				/* Some protocols might use this space to store information,
 				 * while device pointer would be NULL.
 				 * UDP receive path is one user.
@@ -728,13 +728,13 @@ struct sk_buff {
 		};
 		struct rb_node		rbnode; /* used in netem, ip4 defrag, and tcp stack */
 		struct list_head	list;
-	};
+	}; // sk_buff组织在红黑树或双向链表中
 
 	union {
 		struct sock		*sk;
 		int			ip_defrag_offset;
 	};
-
+	// 包发送/接收时间，存放两种时间类型是因为调用ktime_get()成本太高。
 	union {
 		ktime_t		tstamp;
 		u64		skb_mstamp_ns; /* earliest departure time */
@@ -745,12 +745,12 @@ struct sk_buff {
 	 * want to keep them across layers you have to do a skb_clone()
 	 * first. This is owned by whoever has the skb queued ATM.
 	 */
-	char			cb[48] __aligned(8);
+	char			cb[48] __aligned(8); /* 控制用的缓冲区,用于存放各层的私有数据 */
 
 	union {
 		struct {
-			unsigned long	_skb_refdst;
-			void		(*destructor)(struct sk_buff *skb);
+			unsigned long	_skb_refdst; // 存放了目的地项的引用计数
+			void		(*destructor)(struct sk_buff *skb); // 析构函数
 		};
 		struct list_head	tcp_tsorted_anchor;
 	};
@@ -758,15 +758,15 @@ struct sk_buff {
 #if defined(CONFIG_NF_CONNTRACK) || defined(CONFIG_NF_CONNTRACK_MODULE)
 	unsigned long		 _nfct;
 #endif
-	unsigned int		len,
-				data_len;
-	__u16			mac_len,
-				hdr_len;
+	unsigned int		len, // 代表buffer中的数据报总长度(含各协议的头部)，以及分片长度
+				data_len; // 分片中的数据长度
+	__u16			mac_len, // MAC层头部的长度
+				hdr_len; // 克隆出来的可写的头部长度
 
 	/* Following fields are _not_ copied in __copy_skb_header()
 	 * Note that queue_mapping is here mostly to fill a hole.
 	 */
-	__u16			queue_mapping;
+	__u16			queue_mapping; // 对于多队列设备的队列关系映射
 
 /* if you move cloned around you also must adapt those constants */
 #ifdef __BIG_ENDIAN_BITFIELD
@@ -779,10 +779,10 @@ struct sk_buff {
 	/* private: */
 	__u8			__cloned_offset[0];
 	/* public: */
-	__u8			cloned:1,
-				nohdr:1,
-				fclone:2,
-				peeked:1,
+	__u8			cloned:1, // 是否被克隆
+				nohdr:1, // 只引用了payload
+				fclone:2, // skbuff的克隆情况
+				peeked:1, // peeked表明该包已经被统计过，无需再次统计
 				head_frag:1,
 				pfmemalloc:1;
 #ifdef CONFIG_SKB_EXTENSIONS
@@ -792,7 +792,7 @@ struct sk_buff {
 	 * using a single memcpy() in __copy_skb_header()
 	 */
 	/* private: */
-	__u32			headers_start[0];
+	__u32			headers_start[0]; // 0长度的数组来标明头部的起始地址
 	/* public: */
 
 /* if you move pkt_type around you also must adapt those constants */
@@ -806,17 +806,17 @@ struct sk_buff {
 	/* private: */
 	__u8			__pkt_type_offset[0];
 	/* public: */
-	__u8			pkt_type:3;
-	__u8			ignore_df:1;
-	__u8			nf_trace:1;
-	__u8			ip_summed:2;
-	__u8			ooo_okay:1;
+	__u8			pkt_type:3; // 包类型
+	__u8			ignore_df:1; // 是否允许本地分片 (local fragmentation)
+	__u8			nf_trace:1; // netfilter 包追踪标记
+	__u8			ip_summed:2; // 驱动(硬件)给出来的 checksum
+	__u8			ooo_okay:1; // 允许该 socket 到队列的对应关系发生变更
 
-	__u8			l4_hash:1;
+	__u8			l4_hash:1; // 表明哈希值字段 hash 是一个典型的 4 元组的通过传输端口的哈希
 	__u8			sw_hash:1;
-	__u8			wifi_acked_valid:1;
-	__u8			wifi_acked:1;
-	__u8			no_fcs:1;
+	__u8			wifi_acked_valid:1; // 表明哈希值字段 hash 是通过软件栈计算出来的
+	__u8			wifi_acked:1; // 表明帧是否在 wifi 上被确认了
+	__u8			no_fcs:1; // 请求 NIC 将最后的 4 个字节作为以太网 FCS 来对待
 	/* Indicates the inner headers are valid in the skbuff. */
 	__u8			encapsulation:1;
 	__u8			encap_hdr_csum:1;
@@ -837,10 +837,10 @@ struct sk_buff {
 	__u8			csum_not_inet:1;
 	__u8			dst_pending_confirm:1;
 #ifdef CONFIG_IPV6_NDISC_NODETYPE
-	__u8			ndisc_nodetype:2;
+	__u8			ndisc_nodetype:2; /* 路由类型(来自链路层) */
 #endif
 
-	__u8			ipvs_property:1;
+	__u8			ipvs_property:1; /* 标明该 skbuff 是否被 ipvs 拥有 */
 	__u8			inner_protocol_type:1;
 	__u8			remcsum_offload:1;
 #ifdef CONFIG_NET_SWITCHDEV
@@ -864,45 +864,45 @@ struct sk_buff {
 #endif
 
 	union {
-		__wsum		csum;
+		__wsum		csum; /* 校验码 */
 		struct {
-			__u16	csum_start;
-			__u16	csum_offset;
+			__u16	csum_start; /* 从 skb->head 开始到应当计算校验码的起始位置的偏移 */
+			__u16	csum_offset; /* 从 csum_start 开始到存储校验码的位置的偏移 */
 		};
 	};
-	__u32			priority;
-	int			skb_iif;
-	__u32			hash;
-	__be16			vlan_proto;
-	__u16			vlan_tci;
+	__u32			priority; /* 包队列的优先级 */
+	int			skb_iif; /* 到达的设备的序号 */
+	__u32			hash; /* 包的哈希值 */
+	__be16			vlan_proto; /* vlan 包装协议 */
+	__u16			vlan_tci; /* vlan tag 控制信息 */
 #if defined(CONFIG_NET_RX_BUSY_POLL) || defined(CONFIG_XPS)
 	union {
-		unsigned int	napi_id;
+		unsigned int	napi_id; /* 表明该 skb 来源的 NAPI 结构体的 id */
 		unsigned int	sender_cpu;
 	};
 #endif
 #ifdef CONFIG_NETWORK_SECMARK
-	__u32		secmark;
+	__u32		secmark; /* 安全标记 */
 #endif
 
 	union {
-		__u32		mark;
+		__u32		mark; /* 通用的包的标记位 */
 		__u32		reserved_tailroom;
 	};
 
 	union {
-		__be16		inner_protocol;
+		__be16		inner_protocol; /* 协议(封装好的) */
 		__u8		inner_ipproto;
 	};
 
-	__u16			inner_transport_header;
-	__u16			inner_network_header;
-	__u16			inner_mac_header;
+	__u16			inner_transport_header; /* 已封装的内部传输层头部 */
+	__u16			inner_network_header; /* 已封装的内部网络层头部 */
+	__u16			inner_mac_header; /* 已封装的内部链路层头部 */
 
-	__be16			protocol;
-	__u16			transport_header;
-	__u16			network_header;
-	__u16			mac_header;
+	__be16			protocol; /* 驱动(硬件)给出的包的协议类型 */
+	__u16			transport_header; /* 传输层头部 */
+	__u16			network_header; /* 网络层头部 */
+	__u16			mac_header; /* 数据链路层头部 */
 
 	/* private: */
 	__u32			headers_end[0];
@@ -910,11 +910,11 @@ struct sk_buff {
 
 	/* These elements must be at the end, see alloc_skb() for details.  */
 	sk_buff_data_t		tail;
-	sk_buff_data_t		end;
+	sk_buff_data_t		end; // head和end 代表被分配的内存的起始位置和  终止位置。
 	unsigned char		*head,
-				*data;
-	unsigned int		truesize;
-	refcount_t		users;
+				*data; // data和tail 则是实际数据的起始和终止位置
+	unsigned int		truesize; // 数据报的真实大小
+	refcount_t		users; // 引用计数，原子的
 
 #ifdef CONFIG_SKB_EXTENSIONS
 	/* only useable after checking ->active_extensions != 0 */

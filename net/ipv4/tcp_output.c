@@ -429,7 +429,7 @@ static void smc_options_write(__be32 *ptr, u16 *options)
 	}
 #endif
 }
-
+// 用于存放发送tcp包时，tcp包所包含的选项
 struct tcp_out_options {
 	u16 options;		/* bit field of OPTION_* */
 	u16 mss;		/* 0 to disable */

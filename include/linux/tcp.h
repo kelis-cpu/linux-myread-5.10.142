@@ -59,7 +59,7 @@ static inline unsigned int tcp_optlen(const struct sk_buff *skb)
 /* TCP Fast Open Cookie as stored in memory */
 struct tcp_fastopen_cookie {
 	__le64	val[DIV_ROUND_UP(TCP_FASTOPEN_COOKIE_MAX, sizeof(u64))];
-	s8	len;
+	s8	len; // len为0代表需要请求一个cookie
 	bool	exp;	/* In RFC6994 experimental option format */
 };
 
@@ -77,7 +77,7 @@ struct tcp_sack_block {
 /*These are used to set the sack_ok field in struct tcp_options_received */
 #define TCP_SACK_SEEN     (1 << 0)   /*1 = peer is SACK capable, */
 #define TCP_DSACK_SEEN    (1 << 2)   /*1 = DSACK was received from peer*/
-
+// tcp头部的选项字段
 struct tcp_options_received {
 /*	PAWS/RTTM data	*/
 	int	ts_recent_stamp;/* Time we stored ts_recent (for aging) */
@@ -141,7 +141,7 @@ static inline struct tcp_request_sock *tcp_rsk(const struct request_sock *req)
 {
 	return (struct tcp_request_sock *)req;
 }
-
+// tcp协议的控制块，在inet_connection_sock基础上扩展了滑动窗口协议、拥塞控制算法
 struct tcp_sock {
 	/* inet_connection_sock has to be the first member of tcp_sock */
 	struct inet_connection_sock	inet_conn;

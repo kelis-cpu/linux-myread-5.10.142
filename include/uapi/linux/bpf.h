@@ -4262,11 +4262,11 @@ struct bpf_xdp_sock {
  * result in packet drops and a warning via bpf_warn_invalid_xdp_action().
  */
 enum xdp_action {
-	XDP_ABORTED = 0,
-	XDP_DROP,
-	XDP_PASS,
-	XDP_TX,
-	XDP_REDIRECT,
+	XDP_ABORTED = 0, // 表示程序产生了异常，其行为和XDP_DROP相同，但XDP_ABORTED会经过
+	XDP_DROP, // 在驱动层丢弃报文，通常用于实现DDos或防火墙。
+	XDP_PASS, // 允许报文上送到内核网络栈，同时处理该报文的CPU会分配并填充一个skb，将其传递到内核协议栈。
+	XDP_TX, // 从当前网卡发送出去
+	XDP_REDIRECT, // 将包重定向到其他网络接口（包括虚拟机的虚拟网卡），或者通过AF_XDP socket重定向到用户空间。
 };
 
 /* user accessible metadata for XDP packet hook

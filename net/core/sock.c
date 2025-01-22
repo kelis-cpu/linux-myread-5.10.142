@@ -2903,11 +2903,12 @@ void sock_def_readable(struct sock *sk)
 	struct socket_wq *wq;
 
 	rcu_read_lock();
-	wq = rcu_dereference(sk->sk_wq);
-	if (skwq_has_sleeper(wq))
+	wq = rcu_dereference(sk->sk_wq); // 读取 sk->sk_wq 字段的值，即 struct sock 结构体中的 sk_wq 成员。它是在 RCU 临界区内执行的。
+	if (skwq_has_sleeper(wq)) // 检查 wq 所指向的 struct socket_wq 是否有等待唤醒的进程
+	// 如果有等待唤醒的进程，那么 wake_up_interruptible_sync_poll 函数会触发对等待队列中的进程的唤醒，并传递相应的事件掩码，其中 EPOLLIN、EPOLLPRI、EPOLLRDNORM、EPOLLRDBAND 是用于表示可读事件的标志。
 		wake_up_interruptible_sync_poll(&wq->wait, EPOLLIN | EPOLLPRI |
 						EPOLLRDNORM | EPOLLRDBAND);
-	sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN);
+	sk_wake_async(sk, SOCK_WAKE_WAITD, POLL_IN); // 异步唤醒与给定套接字关联的进程。SOCK_WAKE_WAITD 是指定唤醒类型的标志，表示等待可读事件。POLL_IN 是传递给唤醒函数的事件掩码，表示可读事件。
 	rcu_read_unlock();
 }
 
@@ -3006,7 +3007,7 @@ void sock_init_data(struct socket *sock, struct sock *sk)
 			af_family_clock_key_strings[sk->sk_family]);
 
 	sk->sk_state_change	=	sock_def_wakeup;
-	sk->sk_data_ready	=	sock_def_readable;
+	sk->sk_data_ready	=	sock_def_readable; // sk_daa_ready
 	sk->sk_write_space	=	sock_def_write_space;
 	sk->sk_error_report	=	sock_def_error_report;
 	sk->sk_destruct		=	sock_def_destruct;
@@ -3467,7 +3468,7 @@ static int req_prot_init(const struct proto *prot)
 	}
 	return 0;
 }
-
+// 将协议加载到全局的proto_list中
 int proto_register(struct proto *prot, int alloc_slab)
 {
 	int ret = -ENOBUFS;

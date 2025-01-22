@@ -256,15 +256,16 @@ static int inet_create(struct net *net, struct socket *sock, int protocol,
 	int try_loading_module = 0;
 	int err;
 
-	if (protocol < 0 || protocol >= IPPROTO_MAX)
+	if (protocol < 0 || protocol >= IPPROTO_MAX) // 检查协议值是否在合法范围内。
 		return -EINVAL;
 
-	sock->state = SS_UNCONNECTED;
+	sock->state = SS_UNCONNECTED;  // 将套接字的状态设置为未连接状态。
 
 	/* Look for the requested type/protocol pair. */
 lookup_protocol:
 	err = -ESOCKTNOSUPPORT;
 	rcu_read_lock();
+	// 在协议族列表中查找请求的套接字类型和协议对。
 	list_for_each_entry_rcu(answer, &inetsw[sock->type], list) {
 
 		err = 0;
@@ -283,7 +284,7 @@ lookup_protocol:
 		}
 		err = -EPROTONOSUPPORT;
 	}
-
+	// 如果找不到匹配的协议，则尝试加载相关的协议模块，并重新查找。
 	if (unlikely(err)) {
 		if (try_loading_module < 2) {
 			rcu_read_unlock();
@@ -307,22 +308,23 @@ lookup_protocol:
 	}
 
 	err = -EPERM;
+	// 检查是否有足够的权限创建 SOCK_RAW 类型的套接字
 	if (sock->type == SOCK_RAW && !kern &&
 	    !ns_capable(net->user_ns, CAP_NET_RAW))
 		goto out_rcu_unlock;
-
+	// 设置套接字的操作函数和协议
 	sock->ops = answer->ops;
 	answer_prot = answer->prot;
 	answer_flags = answer->flags;
 	rcu_read_unlock();
 
 	WARN_ON(!answer_prot->slab);
-
+	 // 分配套接字对象
 	err = -ENOBUFS;
 	sk = sk_alloc(net, PF_INET, GFP_KERNEL, answer_prot, kern);
 	if (!sk)
 		goto out;
-
+	 // 根据协议特性设置套接字的属性
 	err = 0;
 	if (INET_PROTOSW_REUSE & answer_flags)
 		sk->sk_reuse = SK_CAN_REUSE;
@@ -337,20 +339,20 @@ lookup_protocol:
 		if (IPPROTO_RAW == protocol)
 			inet->hdrincl = 1;
 	}
-
+	// 设置套接字的路径 MTU 发现属性
 	if (READ_ONCE(net->ipv4.sysctl_ip_no_pmtu_disc))
 		inet->pmtudisc = IP_PMTUDISC_DONT;
 	else
 		inet->pmtudisc = IP_PMTUDISC_WANT;
 
 	inet->inet_id = 0;
-
+	 // 初始化套接字和套接字对象
 	sock_init_data(sock, sk);
 
 	sk->sk_destruct	   = inet_sock_destruct;
 	sk->sk_protocol	   = protocol;
 	sk->sk_backlog_rcv = sk->sk_prot->backlog_rcv;
-
+	// 设置套接字的 TTL 和多播相关属性
 	inet->uc_ttl	= -1;
 	inet->mc_loop	= 1;
 	inet->mc_ttl	= 1;
@@ -358,24 +360,26 @@ lookup_protocol:
 	inet->mc_index	= 0;
 	inet->mc_list	= NULL;
 	inet->rcv_tos	= 0;
-
+	 // 增加套接字对象的引用计数
 	sk_refcnt_debug_inc(sk);
-
+	// 如果协议允许在套接字创建时为其分配一个数字
 	if (inet->inet_num) {
 		/* It assumes that any protocol which allows
 		 * the user to assign a number at socket
 		 * creation time automatically
 		 * shares.
 		 */
+		  // 将该数字作为套接字的端口号。
 		inet->inet_sport = htons(inet->inet_num);
 		/* Add to protocol hash chains. */
+		// 并将套接字添加到协议的哈希链中
 		err = sk->sk_prot->hash(sk);
 		if (err) {
 			sk_common_release(sk);
 			goto out;
 		}
 	}
-
+	 // 如果协议有初始化函数，则调用该函数进行初始化
 	if (sk->sk_prot->init) {
 		err = sk->sk_prot->init(sk);
 		if (err) {
@@ -383,7 +387,7 @@ lookup_protocol:
 			goto out;
 		}
 	}
-
+	// 如果不是内核空间套接字，则在用户空间执行 BPF 程序进行套接字的过滤和控制。
 	if (!kern) {
 		err = BPF_CGROUP_RUN_PROG_INET_SOCK(sk);
 		if (err) {
@@ -1938,6 +1942,12 @@ static struct packet_type ip_packet_type __read_mostly = {
 	.list_func = ip_list_rcv,
 };
 
+/*
+	fs_initcall调用 inet_init 完成网络协议栈模块初始化，主要流程有
+	1.将 TCP、UDP 和 ICMP 的接收函数注册到 inet_protos 数组中;
+	2.注册 Socket 相关的信息到 inetsw 链表数组中，便于 inet_create 函数创建套接字；
+	3.将 IP 的接收函数注册到 ptype_base 哈希表中。
+*/
 static int __init inet_init(void)
 {
 	struct inet_protosw *q;
@@ -1945,7 +1955,7 @@ static int __init inet_init(void)
 	int rc;
 
 	sock_skb_cb_check_size(sizeof(struct inet_skb_parm));
-
+	/* 注册各种协议的各种处理函数 */
 	rc = proto_register(&tcp_prot, 1);
 	if (rc)
 		goto out;
@@ -1975,7 +1985,7 @@ static int __init inet_init(void)
 	/*
 	 *	Add all the base protocols.
 	 */
-
+	/* 添加所有基础网络协议，eg. 添加到 inet_protos[IPPROTO_ICMP] = icmp_protocol 数组里 */
 	if (inet_add_protocol(&icmp_protocol, IPPROTO_ICMP) < 0)
 		pr_crit("%s: Cannot add ICMP protocol\n", __func__);
 	if (inet_add_protocol(&udp_protocol, IPPROTO_UDP) < 0)
@@ -1990,20 +2000,21 @@ static int __init inet_init(void)
 	/* Register the socket-side information for inet_create. */
 	for (r = &inetsw[0]; r < &inetsw[SOCK_MAX]; ++r)
 		INIT_LIST_HEAD(r);
-
+	// 遍历所有协议，循环调用 inet_register_protosw 函数将 inetsw_array 数组中各个协议的操作注册到 inetsw 链表数组中，
+	// 便于 inet_create 函数根据具体协议类型创建套接字。
 	for (q = inetsw_array; q < &inetsw_array[INETSW_ARRAY_LEN]; ++q)
 		inet_register_protosw(q);
 
 	/*
 	 *	Set the ARP module up
 	 */
-
+	/* 加载 arp 模块 */
 	arp_init();
 
 	/*
 	 *	Set the IP module up
 	 */
-
+	/* 加载 ip 模块 */
 	ip_init();
 
 	/* Initialise per-cpu ipv4 mibs */
@@ -2045,7 +2056,7 @@ static int __init inet_init(void)
 
 	ipfrag_init();
 
-	dev_add_pack(&ip_packet_type);
+	dev_add_pack(&ip_packet_type); // 注册ip_recv函数到ptype_base哈希表
 
 	ip_tunnel_core_init();
 
@@ -2061,7 +2072,7 @@ out_unregister_tcp_proto:
 	goto out;
 }
 
-fs_initcall(inet_init);
+fs_initcall(inet_init); // 协议栈初始化
 
 /* ------------------------------------------------------------------------ */
 

@@ -1510,6 +1510,7 @@ static void busylock_release(spinlock_t *busy)
 
 int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 {
+	// 声明并初始化一些变量，包括接收队列（sk_receive_queue）指针、内存分配变量、错误码和自旋锁变量。
 	struct sk_buff_head *list = &sk->sk_receive_queue;
 	int rmem, delta, amt, err = -ENOMEM;
 	spinlock_t *busy = NULL;
@@ -1518,7 +1519,7 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	/* try to avoid the costly atomic add/sub pair when the receive
 	 * queue is full; always allow at least a packet
 	 */
-	rmem = atomic_read(&sk->sk_rmem_alloc);
+	rmem = atomic_read(&sk->sk_rmem_alloc); // 检查套接字接收缓冲区（sk_rcvbuf）是否已满，如果满了，则跳转到 drop 标签处。
 	if (rmem > sk->sk_rcvbuf)
 		goto drop;
 
@@ -1528,32 +1529,32 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	 * - Less cache line misses at copyout() time
 	 * - Less work at consume_skb() (less alien page frag freeing)
 	 */
-	if (rmem > (sk->sk_rcvbuf >> 1)) {
-		skb_condense(skb);
+	if (rmem > (sk->sk_rcvbuf >> 1)) { // 如果接收缓冲区超过一半已使用
+		skb_condense(skb); // 对数据包进行压缩，减小内存开销
 
-		busy = busylock_acquire(sk);
+		busy = busylock_acquire(sk);  // 获取套接字的繁忙锁。
 	}
-	size = skb->truesize;
-	udp_set_dev_scratch(skb);
+	size = skb->truesize; // 获取数据包的真实大小
+	udp_set_dev_scratch(skb); // 设置设备 scratch 字段。
 
 	/* we drop only if the receive buf is full and the receive
 	 * queue contains some other skb
 	 */
-	rmem = atomic_add_return(size, &sk->sk_rmem_alloc);
-	if (rmem > (size + (unsigned int)sk->sk_rcvbuf))
+	rmem = atomic_add_return(size, &sk->sk_rmem_alloc); // 将数据包的大小加入套接字的接收缓冲区已分配大小
+	if (rmem > (size + (unsigned int)sk->sk_rcvbuf)) // 检查是否超过了接收缓冲区的总大小
 		goto uncharge_drop;
 
-	spin_lock(&list->lock);
-	if (size >= sk->sk_forward_alloc) {
-		amt = sk_mem_pages(size);
-		delta = amt << SK_MEM_QUANTUM_SHIFT;
+	spin_lock(&list->lock);  // 获取接收队列的自旋锁。
+	if (size >= sk->sk_forward_alloc) { // 如果数据包的大小大于等于套接字的预先分配大小（sk_forward_alloc）
+		amt = sk_mem_pages(size);  // 计算所需的页数和增量大小
+		delta = amt << SK_MEM_QUANTUM_SHIFT; // 增加套接字的已分配内存大小，用于接收缓冲区
 		if (!__sk_mem_raise_allocated(sk, delta, amt, SK_MEM_RECV)) {
 			err = -ENOBUFS;
 			spin_unlock(&list->lock);
 			goto uncharge_drop;
 		}
 
-		sk->sk_forward_alloc += delta;
+		sk->sk_forward_alloc += delta; // 更新套接字的预先分配大小。
 	}
 
 	sk->sk_forward_alloc -= size;
@@ -1561,13 +1562,14 @@ int __udp_enqueue_schedule_skb(struct sock *sk, struct sk_buff *skb)
 	/* no need to setup a destructor, we will explicitly release the
 	 * forward allocated memory on dequeue
 	 */
-	sock_skb_set_dropcount(sk, skb);
+	sock_skb_set_dropcount(sk, skb); // 设置数据包的丢弃计数。
 
-	__skb_queue_tail(list, skb);
+	__skb_queue_tail(list, skb); // 将数据包添加到接收队列的尾部。
 	spin_unlock(&list->lock);
 
-	if (!sock_flag(sk, SOCK_DEAD))
-		sk->sk_data_ready(sk);
+	if (!sock_flag(sk, SOCK_DEAD)) // 如果套接字不是关闭状态。
+		sk->sk_data_ready(sk); // 通知套接字数据准备就绪。
+		// 实际上 sk_data_ready 函数指针指向的是 sock_def_readable 函数。Socket 在创建时，会把 sock_def_readable 函数赋值给sk->sk_data_ready函数指针
 
 	busylock_release(busy);
 	return 0;
@@ -1716,34 +1718,35 @@ EXPORT_SYMBOL(udp_ioctl);
 struct sk_buff *__skb_recv_udp(struct sock *sk, unsigned int flags,
 			       int noblock, int *off, int *err)
 {
-	struct sk_buff_head *sk_queue = &sk->sk_receive_queue;
-	struct sk_buff_head *queue;
-	struct sk_buff *last;
-	long timeo;
+	struct sk_buff_head *sk_queue = &sk->sk_receive_queue; // 指向套接字「接收队列」的指针
+	struct sk_buff_head *queue; // 指向「读取队列」的指针
+	struct sk_buff *last;  // 指向最后一个数据包的指针
+	long timeo; // 超时时间
 	int error;
 
-	queue = &udp_sk(sk)->reader_queue;
+	queue = &udp_sk(sk)->reader_queue;  // queue 指向 UDP 套接字的「读取队列」reader_queue。
 	flags |= noblock ? MSG_DONTWAIT : 0;
-	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT);
+	timeo = sock_rcvtimeo(sk, flags & MSG_DONTWAIT); // 计算接收超时时间
+	// 下面循环用于接收数据包并处理「接收队列」中的数据。
 	do {
-		struct sk_buff *skb;
+		struct sk_buff *skb; // skb 指向接收到的数据包
 
-		error = sock_error(sk);
+		error = sock_error(sk);  // 读取套接字当前的错误码
 		if (error)
 			break;
 
-		error = -EAGAIN;
+		error = -EAGAIN; // 设置错误码为 -EAGAIN（表示暂无数据可接收）
 		do {
-			spin_lock_bh(&queue->lock);
+			spin_lock_bh(&queue->lock); // 加自旋锁，保护套接字的「读取队列」
 			skb = __skb_try_recv_from_queue(sk, queue, flags, off,
-							err, &last);
-			if (skb) {
+							err, &last); // 尝试从「读取队列」获取一个数据包
+			if (skb) { // 如果成功获取到数据包
 				if (!(flags & MSG_PEEK))
-					udp_skb_destructor(sk, skb);
+					udp_skb_destructor(sk, skb); // 如果 flags 没有设置 MSG_PEEK 标志，则销毁数据包
 				spin_unlock_bh(&queue->lock);
-				return skb;
+				return skb; // 返回接收到的数据包
 			}
-
+			// 如果套接字的「接收队列」为空，解锁「读取队列」，并跳到 busy_check 标签处，进行忙等待
 			if (skb_queue_empty_lockless(sk_queue)) {
 				spin_unlock_bh(&queue->lock);
 				goto busy_check;
@@ -1754,27 +1757,30 @@ struct sk_buff *__skb_recv_udp(struct sock *sk, unsigned int flags,
 			 * the sk_receive_queue lock if fwd memory scheduling
 			 * is needed.
 			 */
+			 // 加自旋锁，保护套接字的「接收队列」
 			spin_lock(&sk_queue->lock);
+			 // 将「接收队列」中所有数据包添加到「读取队列」中，初始化「接收队列」为空的双向链表
 			skb_queue_splice_tail_init(sk_queue, queue);
-
+			// 尝试从「读取队列」获取一个数据包
 			skb = __skb_try_recv_from_queue(sk, queue, flags, off,
 							err, &last);
+			// 如果成功获取到数据包，并且 flags 没有设置 MSG_PEEK 标志，则销毁数据包
 			if (skb && !(flags & MSG_PEEK))
 				udp_skb_dtor_locked(sk, skb);
-			spin_unlock(&sk_queue->lock);
-			spin_unlock_bh(&queue->lock);
+			spin_unlock(&sk_queue->lock); // 解锁套接字的「接收队列」
+			spin_unlock_bh(&queue->lock); // 解锁套接字的「读取队列」
 			if (skb)
-				return skb;
+				return skb; // 如果成功获取到数据包，返回接收到的数据包
 
-busy_check:
-			if (!sk_can_busy_loop(sk))
+busy_check: // 忙等待的标签，用于等待「接收队列」中有可读的数据包
+			if (!sk_can_busy_loop(sk)) // 如果套接字不支持忙等待，则跳出循环
 				break;
-
+			// 进行忙循环等待数据到达，根据 MSG_DONTWAIT 决定是否阻塞等待，翻看很多资料，阻塞的话超时时间为 50 微秒；不阻塞的话调用一次就返回。
 			sk_busy_loop(sk, flags & MSG_DONTWAIT);
-		} while (!skb_queue_empty_lockless(sk_queue));
+		} while (!skb_queue_empty_lockless(sk_queue));  // 如果「接收队列」不为空，则继续循环。
 
 		/* sk_queue is empty, reader_queue may contain peeked packets */
-	} while (timeo &&
+	} while (timeo && // 判断是否超时且调用 __skb_wait_for_more_packets 函数阻塞等待更多的数据包到达
 		 !__skb_wait_for_more_packets(sk, &sk->sk_receive_queue,
 					      &error, &timeo,
 					      (struct sk_buff *)sk_queue));
@@ -1799,12 +1805,14 @@ int udp_recvmsg(struct sock *sk, struct msghdr *msg, size_t len, int noblock,
 	int off, err, peeking = flags & MSG_PEEK;
 	int is_udplite = IS_UDPLITE(sk);
 	bool checksum_valid = false;
-
+	 // 检查是否需要处理错误队列(MSG_ERRQUEUE)，如果是，则调用ip_recv_error函数进行错误处理，并返回结果。
 	if (flags & MSG_ERRQUEUE)
 		return ip_recv_error(sk, msg, len, addr_len);
 
 try_again:
+	 // 准备接收数据的偏移量，然后调用__skb_recv_udp函数接收UDP消息的sk_buff结构体
 	off = sk_peek_offset(sk, flags);
+	// 检查接收到的 UDP 消息的长度，根据需要对接收缓冲区长度进行调整，并在需要截断数据时设置相应的消息标志。
 	skb = __skb_recv_udp(sk, flags, noblock, &off, &err);
 	if (!skb)
 		return err;
@@ -1821,7 +1829,7 @@ try_again:
 	 * data.  If the data is truncated, or if we only want a partial
 	 * coverage checksum (UDP-Lite), do it before the copy.
 	 */
-
+	// 根据数据的长度和类型，确定是否需要进行校验和验证。
 	if (copied < ulen || peeking ||
 	    (is_udplite && UDP_SKB_CB(skb)->partial_cov)) {
 		checksum_valid = udp_skb_csum_unnecessary(skb) ||
@@ -1829,19 +1837,23 @@ try_again:
 		if (!checksum_valid)
 			goto csum_copy_err;
 	}
-
+	// 根据校验和验证的结果，选择不同的数据拷贝方式
+	// 第三次复制
 	if (checksum_valid || udp_skb_csum_unnecessary(skb)) {
 		if (udp_skb_is_linear(skb))
+			// 如果数据包是线性的（没有分片），则调用copy_linear_skb函数进行数据拷贝
 			err = copy_linear_skb(skb, copied, off, &msg->msg_iter);
 		else
+			 // 否则，调用skb_copy_datagram_msg函数复制数据到用户提供的缓冲区中。
 			err = skb_copy_datagram_msg(skb, off, msg, copied);
 	} else {
+		// 如果校验和无效，则调用skb_copy_and_csum_datagram_msg函数复制数据到用户提供的缓冲区中，并进行校验和计算。
 		err = skb_copy_and_csum_datagram_msg(skb, off, msg);
 
 		if (err == -EINVAL)
 			goto csum_copy_err;
 	}
-
+	 // 更新统计信息。
 	if (unlikely(err)) {
 		if (!peeking) {
 			atomic_inc(&sk->sk_drops);
@@ -1859,6 +1871,7 @@ try_again:
 	sock_recv_ts_and_drops(msg, sk, skb);
 
 	/* Copy the address. */
+	// 复制源地址信息到 msg 结构体中。
 	if (sin) {
 		sin->sin_family = AF_INET;
 		sin->sin_port = udp_hdr(skb)->source;
@@ -1870,7 +1883,7 @@ try_again:
 			BPF_CGROUP_RUN_PROG_UDP4_RECVMSG_LOCK(sk,
 							(struct sockaddr *)sin);
 	}
-
+	// 如果启用了GRO（Generic Receive Offload），处理相关的控制消息。
 	if (udp_sk(sk)->gro_enabled)
 		udp_cmsg_recv(msg, sk, skb);
 
@@ -1880,7 +1893,7 @@ try_again:
 	err = copied;
 	if (flags & MSG_TRUNC)
 		err = ulen;
-
+	// 返回已复制的字节数
 	skb_consume_udp(sk, skb, peeking ? -err : err);
 	return err;
 
@@ -1890,6 +1903,7 @@ csum_copy_err:
 		UDP_INC_STATS(sock_net(sk), UDP_MIB_CSUMERRORS, is_udplite);
 		UDP_INC_STATS(sock_net(sk), UDP_MIB_INERRORS, is_udplite);
 	}
+	// 释放sk_buff并重新开始处理新的数据包。
 	kfree_skb(skb);
 
 	/* starting over for a new packet, but check if we need to yield */
@@ -2029,20 +2043,20 @@ static int __udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 {
 	int rc;
 
-	if (inet_sk(sk)->inet_daddr) {
-		sock_rps_save_rxhash(sk, skb);
+	if (inet_sk(sk)->inet_daddr) { // 检查套接字的目的 IP 地址是否已设置
+		sock_rps_save_rxhash(sk, skb); // 保存接收哈希值，用于接收包的分发。
 		sk_mark_napi_id(sk, skb);
-		sk_incoming_cpu_update(sk);
+		sk_incoming_cpu_update(sk);  // 更新套接字的 incoming CPU，用于负载均衡。
 	} else {
-		sk_mark_napi_id_once(sk, skb);
+		sk_mark_napi_id_once(sk, skb);  // 标记套接字的 NAPI ID。
 	}
 
-	rc = __udp_enqueue_schedule_skb(sk, skb);
-	if (rc < 0) {
+	rc = __udp_enqueue_schedule_skb(sk, skb); // 将数据包加入套接字的接收队列进行调度处理。
+	if (rc < 0) { // rc < 0，表示加入队列失败。
 		int is_udplite = IS_UDPLITE(sk);
 
 		/* Note that an ENOMEM error is charged twice */
-		if (rc == -ENOMEM)
+		if (rc == -ENOMEM) // 根据返回值设置相应的统计信息增加计数，如接收缓冲区错误。根据返回值设置相应的丢弃原因（drop_reason）。
 			UDP_INC_STATS(sock_net(sk), UDP_MIB_RCVBUFERRORS,
 					is_udplite);
 		UDP_INC_STATS(sock_net(sk), UDP_MIB_INERRORS, is_udplite);
@@ -2070,10 +2084,11 @@ static int udp_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
 	/*
 	 *	Charge it to the socket, dropping if the queue is full.
 	 */
+	 // 对 IPv4 转发策略进行检查和验证。
 	if (!xfrm4_policy_check(sk, XFRM_POLICY_IN, skb))
-		goto drop;
-	nf_reset_ct(skb);
-
+		goto drop; // 不通过直接丢弃数据包
+	nf_reset_ct(skb); // 重置数据包的连接跟踪状态
+	// 如果启用了静态分支 udp_encap_needed_key，并且套接字的封装类型不为空，则进入封装套接字的处理分支。
 	if (static_branch_unlikely(&udp_encap_needed_key) && up->encap_type) {
 		int (*encap_rcv)(struct sock *sk, struct sk_buff *skb);
 
@@ -2105,13 +2120,14 @@ static int udp_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
 				return -ret;
 			}
 		}
-
+		// 如果没有封装处理程序，则继续执行，表示数据包为普通的 UDP 数据包.
 		/* FALLTHROUGH -- it's a UDP Packet */
 	}
 
 	/*
 	 * 	UDP-Lite specific tests, ignored on UDP sockets
 	 */
+	 // 对于 UDP-Lite 套接字，执行特定的测试。如果设置了接收完全覆盖标志 UDPLITE_RECV_CC，并且数据包具有部分覆盖，则进入 if 分支。对于 UDP 套接字将被忽略
 	if ((up->pcflag & UDPLITE_RECV_CC)  &&  UDP_SKB_CB(skb)->partial_cov) {
 
 		/*
@@ -2143,7 +2159,8 @@ static int udp_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
 		}
 	}
 
-	prefetch(&sk->sk_rmem_alloc);
+	prefetch(&sk->sk_rmem_alloc); // 对套接字的接收缓冲区进行预取，以优化后续的访问。
+	// 应用 sk_filter，这允许在 socket 上执行 BPF 程序
 	if (rcu_access_pointer(sk->sk_filter) &&
 	    udp_lib_checksum_complete(skb))
 			goto csum_error;
@@ -2151,10 +2168,10 @@ static int udp_queue_rcv_one_skb(struct sock *sk, struct sk_buff *skb)
 	if (sk_filter_trim_cap(sk, skb, sizeof(struct udphdr)))
 		goto drop;
 
-	udp_csum_pull_header(skb);
+	udp_csum_pull_header(skb);  // 对数据包进行 UDP 头部校验和的计算和校正。
 
-	ipv4_pktinfo_prepare(sk, skb);
-	return __udp_queue_rcv_skb(sk, skb);
+	ipv4_pktinfo_prepare(sk, skb); // 准备 IPv4 包信息，以备后续处理使用。
+	return __udp_queue_rcv_skb(sk, skb); //将数据包放入套接字的接收队列中进行处理。
 
 csum_error:
 	__UDP_INC_STATS(sock_net(sk), UDP_MIB_CSUMERRORS, is_udplite);
@@ -2170,16 +2187,20 @@ static int udp_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	struct sk_buff *next, *segs;
 	int ret;
 
-	if (likely(!udp_unexpected_gso(sk, skb)))
-		return udp_queue_rcv_one_skb(sk, skb);
+	if (likely(!udp_unexpected_gso(sk, skb))) // 如果数据包的大小不超过预期的 GSO（Generic Segmentation Offload）阈值。
+		return udp_queue_rcv_one_skb(sk, skb); // 直接将数据包放入套接字的接收队列中，并调用 udp_queue_rcv_one_skb 函数处理数据包。
 
 	BUILD_BUG_ON(sizeof(struct udp_skb_cb) > SKB_GSO_CB_OFFSET);
+	// 对数据包进行预处理，将数据包的数据部分前移，以排除以太网头部。
 	__skb_push(skb, -skb_mac_offset(skb));
-	segs = udp_rcv_segment(sk, skb, true);
+	segs = udp_rcv_segment(sk, skb, true); // 进行 UDP 分段操作，将数据包分成多个段。
+	// 使用 skb_list_walk_safe 宏遍历分段后的数据包链表
 	skb_list_walk_safe(segs, skb, next) {
+		// 通过 __skb_pull 将数据包的数据部分前移，以排除传输层头部。
 		__skb_pull(skb, skb_transport_offset(skb));
-		ret = udp_queue_rcv_one_skb(sk, skb);
+		ret = udp_queue_rcv_one_skb(sk, skb); // 调用 udp_queue_rcv_one_skb 函数将分段后的数据包放入套接字的接收队列中进行处理
 		if (ret > 0)
+		// 如果返回值大于 0，表示需要重新提交输入，调用 ip_protocol_deliver_rcu 函数进行处理。
 			ip_protocol_deliver_rcu(dev_net(skb->dev), skb, ret);
 	}
 	return 0;
@@ -2325,16 +2346,16 @@ static int udp_unicast_rcv_skb(struct sock *sk, struct sk_buff *skb,
 			       struct udphdr *uh)
 {
 	int ret;
-
+	// 如果套接字启用了校验和转换，并且数据包的校验和字段非零，并且不是 UDPLITE 协议，则尝试转换校验和
 	if (inet_get_convert_csum(sk) && uh->check && !IS_UDPLITE(sk))
 		skb_checksum_try_convert(skb, IPPROTO_UDP, inet_compute_pseudo);
 
-	ret = udp_queue_rcv_skb(sk, skb);
+	ret = udp_queue_rcv_skb(sk, skb); // 将数据包放入套接字接收队列中进行处理，并获取返回值
 
 	/* a return value > 0 means to resubmit the input, but
 	 * it wants the return to be -protocol, or 0
 	 */
-	if (ret > 0)
+	if (ret > 0) // 返回值 > 0 表示需要重新提交输入，但要求返回值为 -protocol 或 0
 		return -ret;
 	return 0;
 }
@@ -2358,58 +2379,58 @@ int __udp4_lib_rcv(struct sk_buff *skb, struct udp_table *udptable,
 	 *  Validate the packet.
 	 */
 	if (!pskb_may_pull(skb, sizeof(struct udphdr)))
-		goto drop;		/* No space for header. */
+		goto drop;		/* No space for header. */  // 没有足够的空间来存储头部。
 
 	uh   = udp_hdr(skb);
 	ulen = ntohs(uh->len);
 	saddr = ip_hdr(skb)->saddr;
 	daddr = ip_hdr(skb)->daddr;
 
-	if (ulen > skb->len)
+	if (ulen > skb->len) // 检查数据包长度是否正确
 		goto short_packet;
 
 	if (proto == IPPROTO_UDP) {
-		/* UDP validates ulen. */
+		/* UDP validates ulen. */ // 如果是 UDP 协议，验证 ulen
 		if (ulen < sizeof(*uh) || pskb_trim_rcsum(skb, ulen))
 			goto short_packet;
 		uh = udp_hdr(skb);
 	}
 
-	if (udp4_csum_init(skb, uh, proto))
+	if (udp4_csum_init(skb, uh, proto)) // 初始化 UDP 校验和
 		goto csum_error;
 
-	sk = skb_steal_sock(skb, &refcounted);
+	sk = skb_steal_sock(skb, &refcounted); // 尝试从 skb 中获取套接字 Socket
 	if (sk) {
 		struct dst_entry *dst = skb_dst(skb);
 		int ret;
 
-		if (unlikely(sk->sk_rx_dst != dst))
+		if (unlikely(sk->sk_rx_dst != dst)) // 如果套接字的 sk_rx_dst 不等于当前数据包的目标入口，则更新 sk_rx_dst
 			udp_sk_rx_dst_set(sk, dst);
 
-		ret = udp_unicast_rcv_skb(sk, skb, uh);
+		ret = udp_unicast_rcv_skb(sk, skb, uh);  // 调用 udp_unicast_rcv_skb 处理套接字，并返回
 		if (refcounted)
 			sock_put(sk);
 		return ret;
 	}
 
-	if (rt->rt_flags & (RTCF_BROADCAST|RTCF_MULTICAST))
+	if (rt->rt_flags & (RTCF_BROADCAST|RTCF_MULTICAST)) // 检查数据包是否广播或多播
 		return __udp4_lib_mcast_deliver(net, skb, uh,
 						saddr, daddr, udptable, proto);
 
-	sk = __udp4_lib_lookup_skb(skb, uh->source, uh->dest, udptable);
+	sk = __udp4_lib_lookup_skb(skb, uh->source, uh->dest, udptable); // 在 UDP 套接字表（udptable）中查找套接字
 	if (sk)
 		return udp_unicast_rcv_skb(sk, skb, uh);
 
-	if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb))
+	if (!xfrm4_policy_check(NULL, XFRM_POLICY_IN, skb)) // 检查安全策略
 		goto drop;
 	nf_reset_ct(skb);
 
 	/* No socket. Drop packet silently, if checksum is wrong */
-	if (udp_lib_checksum_complete(skb))
+	if (udp_lib_checksum_complete(skb)) // 没有套接字。如果校验和错误，则静默地丢弃数据包。
 		goto csum_error;
 
 	__UDP_INC_STATS(net, UDP_MIB_NOPORTS, proto == IPPROTO_UDPLITE);
-	icmp_send(skb, ICMP_DEST_UNREACH, ICMP_PORT_UNREACH, 0);
+	icmp_send(skb, ICMP_DEST_UNREACH, ICMP_PORT_UNREACH, 0); // 数据包无法传递到套接字，发送 ICMP 目的地不可达消息
 
 	/*
 	 * Hmm.  We got an UDP packet to a port to which we

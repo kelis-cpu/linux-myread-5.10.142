@@ -251,10 +251,10 @@ static inline void lockdep_softirq_end(bool in_hardirq)
 static inline bool lockdep_softirq_start(void) { return false; }
 static inline void lockdep_softirq_end(bool in_hardirq) { }
 #endif
-
+// 硬中断在哪个cpu响应的，软中断就在哪个cpu处理。如果软中断都在一个cpu上，可以调整硬中断的cpu亲和性，将硬中断打散到不同cpu核上
 asmlinkage __visible void __softirq_entry __do_softirq(void)
 {
-	unsigned long end = jiffies + MAX_SOFTIRQ_TIME;
+	unsigned long end = jiffies + MAX_SOFTIRQ_TIME; // 中断处理最大时间
 	unsigned long old_flags = current->flags;
 	int max_restart = MAX_SOFTIRQ_RESTART;
 	struct softirq_action *h;
@@ -269,7 +269,7 @@ asmlinkage __visible void __softirq_entry __do_softirq(void)
 	 */
 	current->flags &= ~PF_MEMALLOC;
 
-	pending = local_softirq_pending();
+	pending = local_softirq_pending(); // 中断标志
 	account_irq_enter_time(current);
 
 	__local_bh_disable_ip(_RET_IP_, SOFTIRQ_OFFSET);
@@ -277,11 +277,11 @@ asmlinkage __visible void __softirq_entry __do_softirq(void)
 
 restart:
 	/* Reset the pending bitmask before enabling irqs */
-	set_softirq_pending(0);
+	set_softirq_pending(0); // 设置软中断pending为0
 
-	local_irq_enable();
+	local_irq_enable(); // 开中断
 
-	h = softirq_vec;
+	h = softirq_vec; // 中断向量表
 
 	while ((softirq_bit = ffs(pending))) {
 		unsigned int vec_nr;
@@ -304,17 +304,17 @@ restart:
 			preempt_count_set(prev_count);
 		}
 		h++;
-		pending >>= softirq_bit;
+		pending >>= softirq_bit; // 处理下一个软中断
 	}
 
 	if (__this_cpu_read(ksoftirqd) == current)
 		rcu_softirq_qs();
-	local_irq_disable();
+	local_irq_disable(); // 关中断
 
 	pending = local_softirq_pending();
-	if (pending) {
+	if (pending) { // 发现又有新的中断到来
 		if (time_before(jiffies, end) && !need_resched() &&
-		    --max_restart)
+		    --max_restart) //如果中断处理还未达到end，进程不需要被调度，且调度次数小于最大调度次数，则继续处理中断，否则唤醒
 			goto restart;
 
 		wakeup_softirqd();
@@ -483,7 +483,7 @@ void __raise_softirq_irqoff(unsigned int nr)
 {
 	lockdep_assert_irqs_disabled();
 	trace_softirq_raise(nr);
-	or_softirq_pending(1UL << nr);
+	or_softirq_pending(1UL << nr); // 对一个变量进行或运算
 }
 
 void open_softirq(int nr, void (*action)(struct softirq_action *))
@@ -639,13 +639,13 @@ void __init softirq_init(void)
 
 static int ksoftirqd_should_run(unsigned int cpu)
 {
-	return local_softirq_pending();
+	return local_softirq_pending(); // 读取硬中断设置的标记
 }
 
 static void run_ksoftirqd(unsigned int cpu)
 {
-	local_irq_disable();
-	if (local_softirq_pending()) {
+	local_irq_disable(); // 关中断
+	if (local_softirq_pending()) { // 存在软中断标志
 		/*
 		 * We can safely run softirq on inline stack, as we are not deep
 		 * in the task stack here.
@@ -735,7 +735,7 @@ static __init int spawn_ksoftirqd(void)
 
 	return 0;
 }
-early_initcall(spawn_ksoftirqd);
+early_initcall(spawn_ksoftirqd); // 注册的函数指针会在start_kernel中被执行
 
 /*
  * [ These __weak aliases are kept in a separate compilation unit, so that

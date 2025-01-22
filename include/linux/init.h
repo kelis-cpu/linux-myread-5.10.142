@@ -165,7 +165,7 @@ extern bool initcall_debug;
 #endif
   
 #ifndef MODULE
-
+// 静态加载，将不同的xx_initcall放在不同的代码段中，linux内核在执行时，根据次序，遍历并执行对应的函数
 #ifndef __ASSEMBLY__
 
 /*
@@ -193,10 +193,12 @@ extern bool initcall_debug;
 	    ".previous					\n");
 #else
 #define ___define_initcall(fn, id, __sec) \
-	static initcall_t __initcall_##fn##id __used \
-		__attribute__((__section__(#__sec ".init"))) = fn;
+	static initcall_t __initcall_##fn##id __used \ // #的作用是将目标字符串化，##在宏定义中的作用是符号连接，将多个符号连接成一个符号，并不将其字符串化
+		__attribute__((__section__(#__sec ".init"))) = fn; // 表示编译时将目标符号放置在括号指定的段中
 #endif
 
+// id是一个数字或者是数字+s，这个数字代表这个fn执行的优先级，数字越小，优先级越高
+// 带s的fn优先级低于不带s的fn优先级
 #define __define_initcall(fn, id) ___define_initcall(fn, id, .initcall##id)
 
 /*
@@ -292,7 +294,7 @@ void __init parse_early_options(char *cmdline);
 #endif /* __ASSEMBLY__ */
 
 #else /* MODULE */
-
+// 动态加载 通过系统调用
 #define __setup_param(str, unique_id, fn)	/* nothing */
 #define __setup(str, func) 			/* nothing */
 #endif

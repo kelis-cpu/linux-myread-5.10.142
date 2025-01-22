@@ -247,6 +247,9 @@ struct bpf_local_storage;
 
 /**
   *	struct sock - network layer representation of sockets
+  * Description: sock 结构是比较通用的网络层描述块,构成传输控制块的基础,与具体的协议族无关。
+  * 它描述了各协议族的公共信息,因此不能直接作为传输层控制块来使用。不同协议族的传输层在使用该结构的时候都会对其进行拓展,来适合各自的传输特性。
+  * 例如,inet_sock结构由 sock 结构及其它特性组成,构成了 IPV4 协议族传输控制块的基础。
   *	@__sk_common: shared layout with inet_timewait_sock
   *	@sk_shutdown: mask of %SEND_SHUTDOWN and/or %RCV_SHUTDOWN
   *	@sk_userlocks: %SO_SNDBUF and %SO_RCVBUF settings
@@ -431,11 +434,11 @@ struct sock {
 	refcount_t		sk_wmem_alloc;
 	unsigned long		sk_tsq_flags;
 	union {
-		struct sk_buff	*sk_send_head;
+		struct sk_buff	*sk_send_head; /* 指向队列第一个还没有发送的元素 */
 		struct rb_root	tcp_rtx_queue;
 	};
 	struct sk_buff		*sk_tx_skb_cache;
-	struct sk_buff_head	sk_write_queue;
+	struct sk_buff_head	sk_write_queue; /* 指向skb队列的第一个元素 */
 	__s32			sk_peek_off;
 	int			sk_write_pending;
 	__u32			sk_dst_pending_confirm;

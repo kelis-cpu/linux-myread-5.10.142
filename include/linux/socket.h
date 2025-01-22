@@ -28,10 +28,10 @@ typedef __kernel_sa_family_t	sa_family_t;
 /*
  *	1003.1g requires sa_family_t and that sa_data is char.
  */
-
+// 描述一个地址，可以支持任意的网络层协议
 struct sockaddr {
-	sa_family_t	sa_family;	/* address family, AF_xxx	*/
-	char		sa_data[14];	/* 14 bytes of protocol address	*/
+	sa_family_t	sa_family;	/* address family, AF_xxx，地址所属协议簇	*/
+	char		sa_data[14];	/* 14 bytes of protocol address，在协议下的地址	*/
 };
 
 struct linger {
@@ -48,9 +48,9 @@ struct linger {
  */
 
 struct msghdr {
-	void		*msg_name;	/* ptr to socket address structure */
-	int		msg_namelen;	/* size of socket address structure */
-	struct iov_iter	msg_iter;	/* data */
+	void		*msg_name;	/* ptr to socket address structure，用于udp */
+	int		msg_namelen;	/* size of socket address structure，用于udp */
+	struct iov_iter	msg_iter;	/* data，io缓冲区地址 */
 
 	/*
 	 * Ancillary data. msg_control_user is the user buffer used for the
@@ -58,7 +58,7 @@ struct msghdr {
 	 * buffer used for all other cases.
 	 */
 	union {
-		void		*msg_control;
+		void		*msg_control; // 辅助数据地址
 		void __user	*msg_control_user;
 	};
 	bool		msg_control_is_user : 1;

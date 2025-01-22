@@ -1375,6 +1375,7 @@ static const struct dev_pm_ops pci_dev_pm_ops = {
  * If no error occurred, the driver remains registered even if
  * no device was claimed during registration.
  */
+ // 驱动pci_register_driver调用完成后，内核就知道了该驱动的相关信息，比如igb网卡驱动的driver_name和igb_probe函数地址
 int __pci_register_driver(struct pci_driver *drv, struct module *owner,
 			  const char *mod_name)
 {
@@ -1389,7 +1390,7 @@ int __pci_register_driver(struct pci_driver *drv, struct module *owner,
 	INIT_LIST_HEAD(&drv->dynids.list);
 
 	/* register with core */
-	return driver_register(&drv->driver);
+	return driver_register(&drv->driver); // 将网卡的驱动加载到内核pci子系统
 }
 EXPORT_SYMBOL(__pci_register_driver);
 

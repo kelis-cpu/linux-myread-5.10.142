@@ -922,6 +922,8 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 	if (!large_allowed)
 		return mss_now;
 
+	/* 在支持GSO的情况下，size_goal的值会被设置为网卡驱动中设置的max_gso_size。在进行数据拷贝的时候，所有的数据都会被拷贝到skb的聚合/分散IO区，即采用page物理页的方式来存储数据。
+	采用这种数据存储方式，一方面可以为后续的TSO做准备；另一方面，如果后续不支持GSO，也可以很方便地进行数据的切割（无拷贝）和分段。*/
 	/* Note : tcp_tso_autosize() will eventually split this later */
 	new_size_goal = sk->sk_gso_max_size - 1 - MAX_TCP_HEADER;
 	new_size_goal = tcp_bound_to_half_wnd(tp, new_size_goal);
@@ -938,11 +940,17 @@ static unsigned int tcp_xmit_size_goal(struct sock *sk, u32 mss_now,
 	return max(size_goal, mss_now);
 }
 
+/*调用tcp_send_mss获取当前有效mss即mss_now和数据段的最大长度即size_goal。
+    在此传入是否标识MSG_OOB位，这是因为MSG_OOB是判断是否支持GSO的条件之一，而紧急数据不支持GSO。
+	GSO的全称是Generic Segmentation Offload，即通用的分段卸载技术
+    mss_now:当前的最大报文分段长度(Maxitum Segment Size)。
+    size_goal:发送数据报到达网络设备时数据段的最大长度，该长度用来分割数据。TCP发送报文时，每个SKB的大小不能超过该值。
+    在不支持GSO的情况下，size_goal就等于mss_now，而如果支持GSO，则size_goal会是MSS的整数倍。数据报发送到网络设备后再由网络设备根据MSS进行分割。*/
 int tcp_send_mss(struct sock *sk, int *size_goal, int flags)
 {
 	int mss_now;
 
-	mss_now = tcp_current_mss(sk);
+	mss_now = tcp_current_mss(sk); // 获取有效mss
 	*size_goal = tcp_xmit_size_goal(sk, mss_now, !(flags & MSG_OOB));
 
 	return mss_now;
@@ -1187,8 +1195,11 @@ static int tcp_sendmsg_fastopen(struct sock *sk, struct msghdr *msg,
 	return err;
 }
 
+// 把用户层的消息msg，填充到sk_buff(socket buffer)中，然后把sk_buff加入到该sk的发送队列sk_write_queue中,
+// 最后调用了tcp_transmit_skb(),对sk_buff设置TCP的首部,把发送队列sk_write_queue中的sk_buff发送到ip层.
 int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 {
+	/* 从通用的struct sock *sk得到struct tcp_sock *tp，其实只是一个强制类型转换，因为strcut sock是所有其它socket类型的第一个成员，所有可以直接对指针进行强制类型转换 */
 	struct tcp_sock *tp = tcp_sk(sk);
 	struct ubuf_info *uarg = NULL;
 	struct sk_buff *skb;
@@ -1200,7 +1211,8 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	long timeo;
 
 	flags = msg->msg_flags;
-
+	// TCP的一种零拷贝, 把用户态的数据拷贝到skb?该skb位于sk的sk_write_queue的尾部
+	// not free lunch，见https://docs.kernel.org/networking/msg_zerocopy.html
 	if (flags & MSG_ZEROCOPY && size && sock_flag(sk, SOCK_ZEROCOPY)) {
 		skb = tcp_write_queue_tail(sk);
 		uarg = sock_zerocopy_realloc(sk, size, skb_zcopy(skb));
@@ -1213,7 +1225,7 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 		if (!zc)
 			uarg->zerocopy = 0;
 	}
-
+	// TCP fastopen,在connect时带上数据
 	if (unlikely(flags & MSG_FASTOPEN || inet_sk(sk)->defer_connect) &&
 	    !tp->repair) {
 		err = tcp_sendmsg_fastopen(sk, msg, &copied_syn, size, uarg);
@@ -1222,7 +1234,7 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 		else if (err)
 			goto out_err;
 	}
-
+	// 下方的sk_stream_wait_connect()的超时时间,非阻塞IO的超时时间为0
 	timeo = sock_sndtimeo(sk, flags & MSG_DONTWAIT);
 
 	tcp_rate_check_app_limited(sk);  /* is sending application-limited? */
@@ -1231,13 +1243,15 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	 * (passive side) where data is allowed to be sent before a connection
 	 * is fully established.
 	 */
+	 // 等待连接结束,才能发送数据.TCP Fast Open被动端是例外,它允许在连接建立前就发送数据
 	if (((1 << sk->sk_state) & ~(TCPF_ESTABLISHED | TCPF_CLOSE_WAIT)) &&
 	    !tcp_passive_fastopen(sk)) {
 		err = sk_stream_wait_connect(sk, &timeo);
 		if (err != 0)
 			goto do_error;
 	}
-
+	/* TCP repair 是 Linux3.5 引入的新补丁,它能够实现容器在不同的物理主机间迁移
+	* 它能够在迁移之后,将 TCP 连接重新设置到之前的状态。*/
 	if (unlikely(tp->repair)) {
 		if (tp->repair_queue == TCP_RECV_QUEUE) {
 			copied = tcp_send_rcvq(sk, msg, size);
@@ -1250,7 +1264,7 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 
 		/* 'common' sending to sendq */
 	}
-
+	// 附属数据Ancillary Data,是ipv6的,参见:https://www.ietf.org/rfc/rfc2292.txt
 	sockcm_init(&sockc, sk);
 	if (msg->msg_controllen) {
 		err = sock_cmsg_send(sk, msg, &sockc);
@@ -1261,25 +1275,37 @@ int tcp_sendmsg_locked(struct sock *sk, struct msghdr *msg, size_t size)
 	}
 
 	/* This should be in poll */
+	/*清除套接口发送缓冲队列已满的标志。
+    struct socket ->flags一组标志位，如下：
+    SOCK_ASYNC_NOSPACE：标识该套接口的发送队列是否已满。
+    SOCK_ASYNC_WAITDATA：标识应用程序通过recv调用时，是否在等待数据的接收。
+    SOCK_NOSPACE：标识非异步的情况下该套接口的发送队列是否已满。
+    SOCK_PASSCRED：用于标识是否设置了SO_PASSCRE套接口选项。
+    SOCK_PASSSEC：用于标识是否设置了SO_PASSSEC选项。*/
 	sk_clear_bit(SOCKWQ_ASYNC_NOSPACE, sk);
 
 	/* Ok commence sending. */
-	copied = 0;
+	copied = 0; // 已经从用户数据块复制出来的字节数
 
 restart:
+	// 计算mss
+	// 计算TSO/分片的size_goal,size_goal是数据报到达网络设备时所允许的最大长度,不支持TSO的,则为mss.
+	// 计算过程中, 这2个变量的区别:
+	// tp->rx_opt.user_mss is mss set by user by TCP_MAXSEG. It does NOT counts for TCP options, but includes only bare TCP header.
+    // tp->rx_opt.mss_clamp is mss negotiated at connection setup. It is minimum of user_mss and mss received with SYN. It also does not include TCP options.
 	mss_now = tcp_send_mss(sk, &size_goal, flags);
 
 	err = -EPIPE;
 	if (sk->sk_err || (sk->sk_shutdown & SEND_SHUTDOWN))
 		goto do_error;
-
+	// 遍历msg中的数据，将用户数据发出去
 	while (msg_data_left(msg)) {
-		int copy = 0;
+		int copy = 0; // copy表示了待拷贝到skb中的用户数据量
 
-		skb = tcp_write_queue_tail(sk);
+		skb = tcp_write_queue_tail(sk); // 从队尾取出skb,计算剩余空间
 		if (skb)
 			copy = size_goal - skb->len;
-
+		// 如果skb没有剩余空间了,新建一个skb,添加到sk的sk_write_queue中
 		if (copy <= 0 || !tcp_skb_can_collapse_to(skb)) {
 			bool first_skb;
 
@@ -1310,7 +1336,7 @@ new_segment:
 			 */
 			if (tp->repair)
 				TCP_SKB_CB(skb)->sacked |= TCPCB_REPAIRED;
-		}
+		} // skb空间不够
 
 		/* Try to append data to the end of skb. */
 		if (copy > msg_data_left(msg))
@@ -1323,14 +1349,14 @@ new_segment:
 			err = skb_add_data_nocache(sk, skb, &msg->msg_iter, copy);
 			if (err)
 				goto do_fault;
-		} else if (!zc) {
+		} else if (!zc) { // 如果不做零拷贝
 			bool merge = true;
-			int i = skb_shinfo(skb)->nr_frags;
+			int i = skb_shinfo(skb)->nr_frags; // 利用skb中的page碎片,用来作为copy的空间
 			struct page_frag *pfrag = sk_page_frag(sk);
 
 			if (!sk_page_frag_refill(sk, pfrag))
 				goto wait_for_space;
-
+			// 如果skb不能合并page碎片
 			if (!skb_can_coalesce(skb, i, pfrag->page,
 					      pfrag->offset)) {
 				if (i >= sysctl_max_skb_frags) {
@@ -1361,7 +1387,7 @@ new_segment:
 				page_ref_inc(pfrag->page);
 			}
 			pfrag->offset += copy;
-		} else {
+		} else { // 零拷贝
 			if (!sk_wmem_schedule(sk, copy))
 				goto wait_for_space;
 
@@ -1410,7 +1436,7 @@ wait_for_space:
 			goto do_error;
 
 		mss_now = tcp_send_mss(sk, &size_goal, flags);
-	}
+	} // msg循环
 
 out:
 	if (copied) {
@@ -1444,7 +1470,7 @@ int tcp_sendmsg(struct sock *sk, struct msghdr *msg, size_t size)
 {
 	int ret;
 
-	lock_sock(sk);
+	lock_sock(sk); // 套接字加锁
 	ret = tcp_sendmsg_locked(sk, msg, size);
 	release_sock(sk);
 

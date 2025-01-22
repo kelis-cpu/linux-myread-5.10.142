@@ -818,6 +818,7 @@ static inline u64 tcp_skb_timestamp_us(const struct sk_buff *skb)
  * We also store the host-order sequence numbers in here too.
  * This is 44 bytes if IPV6 is enabled.
  * If this grows please adjust skbuff.h:skbuff->cb[xxx] size appropriately.
+ * 用于将每个tcp包中的控制信息传递给发送封包的代码
  */
 struct tcp_skb_cb {
 	__u32		seq;		/* Starting sequence number	*/
@@ -880,7 +881,7 @@ struct tcp_skb_cb {
 	};
 };
 
-#define TCP_SKB_CB(__skb)	((struct tcp_skb_cb *)&((__skb)->cb[0]))
+#define TCP_SKB_CB(__skb)	((struct tcp_skb_cb *)&((__skb)->cb[0])) // 访问给定的sk_buff的控制缓冲区的变量
 
 static inline void bpf_compute_data_end_sk_skb(struct sk_buff *skb)
 {
@@ -1663,10 +1664,11 @@ void tcp_fastopen_cache_get(struct sock *sk, u16 *mss,
 void tcp_fastopen_cache_set(struct sock *sk, u16 mss,
 			    struct tcp_fastopen_cookie *cookie, bool syn_lost,
 			    u16 try_exp);
+// 用于记录在fast open过程中发送数据的请求
 struct tcp_fastopen_request {
 	/* Fast Open cookie. Size 0 means a cookie request */
 	struct tcp_fastopen_cookie	cookie;
-	struct msghdr			*data;  /* data in MSG_FASTOPEN */
+	struct msghdr			*data;  /* data in MSG_FASTOPEN，在fast open状态下想发送的数据 */
 	size_t				size;
 	int				copied;	/* queued in tcp_connect() */
 	struct ubuf_info		*uarg;

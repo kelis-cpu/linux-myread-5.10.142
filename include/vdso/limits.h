@@ -2,7 +2,7 @@
 #ifndef __VDSO_LIMITS_H
 #define __VDSO_LIMITS_H
 
-#define USHRT_MAX	((unsigned short)~0U)
+#define USHRT_MAX	((unsigned short)~0U) // 65535
 #define SHRT_MAX	((short)(USHRT_MAX >> 1))
 #define SHRT_MIN	((short)(-SHRT_MAX - 1))
 #define INT_MAX		((int)(~0U >> 1))

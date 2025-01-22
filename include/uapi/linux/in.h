@@ -231,7 +231,7 @@ struct in_pktinfo {
 };
 #endif
 
-/* Structure describing an Internet (IP) socket address. */
+/* Structure describing an Internet (IP) socket address. ip */
 #if  __UAPI_DEF_SOCKADDR_IN
 #define __SOCK_SIZE__	16		/* sizeof(struct sockaddr)	*/
 struct sockaddr_in {

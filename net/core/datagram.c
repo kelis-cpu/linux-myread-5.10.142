@@ -78,6 +78,7 @@ static int receiver_wake_function(wait_queue_entry_t *wait, unsigned int mode, i
 	/*
 	 * Avoid a wakeup if event not interesting for us
 	 */
+	//  该函数先是判断是否有EPOLLIN或EPOLLERR事件，如果没有直接返回，如果有继续调用 autoremove_wake_function 函数继续执行。
 	if (key && !(key_to_poll(key) & (EPOLLIN | EPOLLERR)))
 		return 0;
 	return autoremove_wake_function(wait, mode, sync, key);
@@ -85,6 +86,9 @@ static int receiver_wake_function(wait_queue_entry_t *wait, unsigned int mode, i
 /*
  * Wait for the last received packet to be different from skb
  */
+// 1.使用 DEFINE_WAIT_FUNC 宏定义等待队列条目（wait_queue_entry），并完初始化，func = receiver_wake_function；
+// 2.调用 prepare_to_wait_exclusive 函数把等待队列条目wait 加入到 Socket 的等待队列sk->sk_wq->wait；
+// 3.最后调用 schedule_timeout 函数进入timer等待超时或被唤醒，通过 schedule 函数让出 CPU。
 int __skb_wait_for_more_packets(struct sock *sk, struct sk_buff_head *queue,
 				int *err, long *timeo_p,
 				const struct sk_buff *skb)

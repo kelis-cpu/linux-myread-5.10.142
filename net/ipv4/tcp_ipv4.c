@@ -2776,6 +2776,7 @@ void tcp4_proc_exit(void)
 }
 #endif /* CONFIG_PROC_FS */
 
+// 全局tcp_prot
 struct proto tcp_prot = {
 	.name			= "TCP",
 	.owner			= THIS_MODULE,

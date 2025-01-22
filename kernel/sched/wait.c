@@ -63,6 +63,9 @@ EXPORT_SYMBOL(remove_wait_queue);
  * started to run but is not in state TASK_RUNNING. try_to_wake_up() returns
  * zero in this (rare) case, and we handle it by continuing to scan the queue.
  */
+ // 找出一个等待队列条目curr（wait_queue_entry结构体，定义在下面），
+//  然后调用其curr->func。在后面讲解调用recv和recvfrom函数执行的时候，
+// 使用 DEFINE_WAIT_FUNC 初始化了等待队列条目，然后把curr->func设置成了 receiver_wake_function 函数
 static int __wake_up_common(struct wait_queue_head *wq_head, unsigned int mode,
 			int nr_exclusive, int wake_flags, void *key,
 			wait_queue_entry_t *bookmark)
@@ -186,7 +189,7 @@ void __wake_up_sync_key(struct wait_queue_head *wq_head, unsigned int mode,
 {
 	if (unlikely(!wq_head))
 		return;
-
+	// 传入的参数nr_exclusive是 1，指的是即使有多个线程阻塞在同一个 Socket 上，也只唤醒 1 个线程，目的是避免惊群。
 	__wake_up_common_lock(wq_head, mode, 1, WF_SYNC, key);
 }
 EXPORT_SYMBOL_GPL(__wake_up_sync_key);

@@ -446,6 +446,7 @@ static inline int dst_output(struct net *net, struct sock *sk, struct sk_buff *s
 /* Input packet from network to transport.  */
 static inline int dst_input(struct sk_buff *skb)
 {
+	// ip_rcv_finish_core已经获取到 skb 的 dst_entry（目标入口），然后调用 dst_input(skb)，skb->dst.input 是一个函数指针，创建 Socket 时就被「路由子系统」初始化了。如果 skb 是发给本机器的，那么 skb->dst.input 就是 ip_local_deliver。最后调用 ip_local_deliver(skb)。
 	return skb_dst(skb)->input(skb);
 }
 

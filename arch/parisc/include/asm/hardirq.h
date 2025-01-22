@@ -17,7 +17,7 @@
 #endif
 
 typedef struct {
-	unsigned int __softirq_pending;
+	unsigned int __softirq_pending; // 32位掩码，为1表示该软中断已经被激活，正等待处理，为0表示软中断被禁止，在do_irq中被使用
 	unsigned int kernel_stack_usage;
 	unsigned int irq_stack_usage;
 #ifdef CONFIG_SMP
@@ -29,7 +29,7 @@ typedef struct {
 	unsigned int irq_tlb_count;
 } ____cacheline_aligned irq_cpustat_t;
 
-DECLARE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat);
+DECLARE_PER_CPU_SHARED_ALIGNED(irq_cpustat_t, irq_stat); // 每个cpu都有一个irq_stat结构
 
 #define __ARCH_IRQ_STAT
 #define __IRQ_STAT(cpu, member) (irq_stat[cpu].member)

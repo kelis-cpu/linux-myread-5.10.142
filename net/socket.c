@@ -453,7 +453,7 @@ static int sock_map_fd(struct socket *sock, int flags)
 struct socket *sock_from_file(struct file *file, int *err)
 {
 	if (file->f_op == &socket_file_ops)
-		return file->private_data;	/* set in sock_map_fd */
+		return file->private_data;	/* set in sock_map_fd */ // 在socket()系统调用中赋值的，具体是在sock_alloc_file()函数里赋值
 
 	*err = -ENOTSOCK;
 	return NULL;
@@ -493,12 +493,12 @@ EXPORT_SYMBOL(sockfd_lookup);
 
 static struct socket *sockfd_lookup_light(int fd, int *err, int *fput_needed)
 {
-	struct fd f = fdget(fd);
+	struct fd f = fdget(fd); // 根据fd获取file结构体
 	struct socket *sock;
 
 	*err = -EBADF;
 	if (f.file) {
-		sock = sock_from_file(f.file, err);
+		sock = sock_from_file(f.file, err); // 根据file结构体获取socket
 		if (likely(sock)) {
 			*fput_needed = f.flags & FDPUT_FPUT;
 			return sock;
@@ -882,6 +882,7 @@ INDIRECT_CALLABLE_DECLARE(int inet6_recvmsg(struct socket *, struct msghdr *,
 static inline int sock_recvmsg_nosec(struct socket *sock, struct msghdr *msg,
 				     int flags)
 {
+	// 在调用 inet_create 函数创建套接字时sock->ops->recvmsg函数指针指向了 inet_recvmsg 函数，TCP 和 UDP 协议对应的都是它。
 	return INDIRECT_CALL_INET(sock->ops->recvmsg, inet6_recvmsg,
 				  inet_recvmsg, sock, msg, msg_data_left(msg),
 				  flags);
@@ -1352,9 +1353,9 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	/*
 	 *      Check protocol is in range
 	 */
-	if (family < 0 || family >= NPROTO)
+	if (family < 0 || family >= NPROTO) // 检查协议族和通信类型的范围
 		return -EAFNOSUPPORT;
-	if (type < 0 || type >= SOCK_MAX)
+	if (type < 0 || type >= SOCK_MAX) // 检查通信类型是否在合法范围内
 		return -EINVAL;
 
 	/* Compatibility.
@@ -1362,12 +1363,13 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	   This uglymoron is moved from INET layer to here to avoid
 	   deadlock in module load.
 	 */
+	 // 兼容性处理，当协议族为 PF_INET 且通信类型为 SOCK_PACKET 时。
 	if (family == PF_INET && type == SOCK_PACKET) {
 		pr_info_once("%s uses obsolete (PF_INET,SOCK_PACKET)\n",
 			     current->comm);
 		family = PF_PACKET;
 	}
-
+	 // 调用 LSM（Linux Security Modules）处理套接字创建的安全检查，确保权限和安全策略的一致性。
 	err = security_socket_create(family, type, protocol, kern);
 	if (err)
 		return err;
@@ -1377,16 +1379,16 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 	 *	the protocol is 0, the family is instructed to select an appropriate
 	 *	default.
 	 */
-	sock = sock_alloc();
+	sock = sock_alloc(); // 分配套接字对象。
 	if (!sock) {
 		net_warn_ratelimited("socket: no more sockets\n");
 		return -ENFILE;	/* Not exactly a match, but its the
 				   closest posix thing */
 	}
 
-	sock->type = type;
+	sock->type = type; // 设置套接字对象的通信类型。
 
-#ifdef CONFIG_MODULES
+#ifdef CONFIG_MODULES // 如果配置支持协议族模块，并且协议族模块尚未加载，尝试加载相关模块。
 	/* Attempt to load a protocol module if the find failed.
 	 *
 	 * 12/09/1996 Marcin: But! this makes REALLY only sense, if the user
@@ -1397,42 +1399,44 @@ int __sock_create(struct net *net, int family, int type, int protocol,
 		request_module("net-pf-%d", family);
 #endif
 
-	rcu_read_lock();
+	rcu_read_lock(); // 通过 RCU 读锁访问协议族，并获取相关的协议族结构。
 	pf = rcu_dereference(net_families[family]);
 	err = -EAFNOSUPPORT;
-	if (!pf)
+	if (!pf) // 如果获取协议族结构失败，则转到 out_release 进行释放资源。
 		goto out_release;
 
 	/*
 	 * We will call the ->create function, that possibly is in a loadable
 	 * module, so we have to bump that loadable module refcnt first.
 	 */
-	if (!try_module_get(pf->owner))
+	if (!try_module_get(pf->owner))  // 如果成功获取协议族结构，尝试增加该协议族模块的引用计数。
 		goto out_release;
 
 	/* Now protected by module ref count */
 	rcu_read_unlock();
-
+	// 调用协议族的 create 函数，创建套接字对象。
+	// 对于AF_INET协议族来说，create函数指针指向 inet_create 函数；
 	err = pf->create(net, sock, protocol, kern);
-	if (err < 0)
+	if (err < 0)  // 如果协议族的 create 函数调用失败，则转到 out_module_put 进行模块引用计数的释放。
 		goto out_module_put;
 
 	/*
 	 * Now to bump the refcnt of the [loadable] module that owns this
 	 * socket at sock_release time we decrement its refcnt.
 	 */
-	if (!try_module_get(sock->ops->owner))
+	if (!try_module_get(sock->ops->owner)) // 如果成功创建套接字对象，尝试增加套接字操作函数的模块引用计数。
 		goto out_module_busy;
 
 	/*
 	 * Now that we're done with the ->create function, the [loadable]
 	 * module can have its refcnt decremented
 	 */
-	module_put(pf->owner);
+	module_put(pf->owner); // 释放协议族模块的引用计数。
+	// 调用 LSM 处理套接字创建后的安全检查。
 	err = security_socket_post_create(sock, family, type, protocol, kern);
 	if (err)
 		goto out_sock_release;
-	*res = sock;
+	*res = sock; // 将创建的套接字对象赋值给 res，并返回 0 表示成功创建套接字。
 
 	return 0;
 
@@ -1502,18 +1506,18 @@ int __sys_socket(int family, int type, int protocol)
 	if (flags & ~(SOCK_CLOEXEC | SOCK_NONBLOCK))
 		return -EINVAL;
 	type &= SOCK_TYPE_MASK;
-
+	// 如果套接字类型中包含 SOCK_NONBLOCK 标志且不等于 O_NONBLOCK，则将其转换为 O_NONBLOCK 标志
 	if (SOCK_NONBLOCK != O_NONBLOCK && (flags & SOCK_NONBLOCK))
 		flags = (flags & ~SOCK_NONBLOCK) | O_NONBLOCK;
 
-	retval = sock_create(family, type, protocol, &sock);
+	retval = sock_create(family, type, protocol, &sock); // 创建套接字对象，保存在sock变量中
 	if (retval < 0)
 		return retval;
-
+	// 将套接字对象映射到文件描述符，并应用标志（O_CLOEXEC 和 O_NONBLOCK）
 	return sock_map_fd(sock, flags & (O_CLOEXEC | O_NONBLOCK));
 }
 
-SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol)
+SYSCALL_DEFINE3(socket, int, family, int, type, int, protocol) // 创建套接字
 {
 	return __sys_socket(family, type, protocol);
 }
@@ -1953,14 +1957,14 @@ int __sys_sendto(int fd, void __user *buff, size_t len, unsigned int flags,
 	struct socket *sock;
 	struct sockaddr_storage address;
 	int err;
-	struct msghdr msg;
+	struct msghdr msg; // 发送数据的属性
 	struct iovec iov;
 	int fput_needed;
 
-	err = import_single_range(WRITE, buff, len, &iov, &msg.msg_iter);
+	err = import_single_range(WRITE, buff, len, &iov, &msg.msg_iter); // 初始化iov
 	if (unlikely(err))
 		return err;
-	sock = sockfd_lookup_light(fd, &err, &fput_needed);
+	sock = sockfd_lookup_light(fd, &err, &fput_needed); // 通过fd获取对应的socket
 	if (!sock)
 		goto out;
 
@@ -1978,7 +1982,7 @@ int __sys_sendto(int fd, void __user *buff, size_t len, unsigned int flags,
 	if (sock->file->f_flags & O_NONBLOCK)
 		flags |= MSG_DONTWAIT;
 	msg.msg_flags = flags;
-	err = sock_sendmsg(sock, &msg);
+	err = sock_sendmsg(sock, &msg); // 实际发送，socet在初始化时赋值给结构体struct proto tcp_prot的函数tcp_sendmsg
 
 out_put:
 	fput_light(sock->file, fput_needed);
@@ -1996,7 +2000,7 @@ SYSCALL_DEFINE6(sendto, int, fd, void __user *, buff, size_t, len,
 /*
  *	Send a datagram down a socket.
  */
-
+// 发送数据报系统调用
 SYSCALL_DEFINE4(send, int, fd, void __user *, buff, size_t, len,
 		unsigned int, flags)
 {
@@ -2018,9 +2022,10 @@ int __sys_recvfrom(int fd, void __user *ubuf, size_t size, unsigned int flags,
 	int err, err2;
 	int fput_needed;
 
-	err = import_single_range(READ, ubuf, size, &iov, &msg.msg_iter);
+	err = import_single_range(READ, ubuf, size, &iov, &msg.msg_iter); // 将user buf关联到msg中
 	if (unlikely(err))
 		return err;
+	// 根据用户传入的 fd 找到 Socket 对象
 	sock = sockfd_lookup_light(fd, &err, &fput_needed);
 	if (!sock)
 		goto out;
@@ -2033,9 +2038,10 @@ int __sys_recvfrom(int fd, void __user *ubuf, size_t size, unsigned int flags,
 	msg.msg_namelen = 0;
 	msg.msg_iocb = NULL;
 	msg.msg_flags = 0;
+	// 如果 Socket 对象为非阻塞，设置 flags 为 MSG_DONTWAIT
 	if (sock->file->f_flags & O_NONBLOCK)
 		flags |= MSG_DONTWAIT;
-	err = sock_recvmsg(sock, &msg, flags);
+	err = sock_recvmsg(sock, &msg, flags); // 获取具体数据
 
 	if (err >= 0 && addr != NULL) {
 		err2 = move_addr_to_user(&address,

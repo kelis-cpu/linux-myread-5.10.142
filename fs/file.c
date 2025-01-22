@@ -966,15 +966,16 @@ struct file *fget_task(struct task_struct *task, unsigned int fd)
  */
 static unsigned long __fget_light(unsigned int fd, fmode_t mask)
 {
-	struct files_struct *files = current->files;
+	struct files_struct *files = current->files; // 获取当前进程打开的文件列表
 	struct file *file;
-
+	// 如果只有一个进程在使用，那就不需要加锁了，锁比较耗性能
 	if (atomic_read(&files->count) == 1) {
-		file = __fcheck_files(files, fd);
+		file = __fcheck_files(files, fd); // 根据files_struct结构获取file结构体
 		if (!file || unlikely(file->f_mode & mask))
 			return 0;
 		return (unsigned long)file;
 	} else {
+		// 多个进程使用，需要加锁保护
 		file = __fget(fd, mask, 1);
 		if (!file)
 			return 0;

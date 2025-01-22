@@ -49,6 +49,7 @@ struct saved_syn {
 };
 
 /* struct request_sock - mini sock to represent a connection request
+ * 该结构用于表示一个简单的 TCP 连接请求。
  */
 struct request_sock {
 	struct sock_common		__req_common;

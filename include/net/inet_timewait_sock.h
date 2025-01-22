@@ -29,6 +29,7 @@ struct inet_bind_bucket;
  * This is a TIME_WAIT sock. It works around the memory consumption
  * problems of sockets in such a state on heavily loaded servers, but
  * without violating the protocol specification.
+ * 这个结构体的存在主要是为了解决重负载情况下的内存负担问题。
  */
 struct inet_timewait_sock {
 	/*
@@ -36,6 +37,7 @@ struct inet_timewait_sock {
 	 * don't add nothing before this first member (__tw_common) --acme
 	 */
 	struct sock_common	__tw_common;
+/* 通过宏定义为 sock_common 中的结构体起一个 tw 开头的别名。 */
 #define tw_family		__tw_common.skc_family
 #define tw_state		__tw_common.skc_state
 #define tw_reuse		__tw_common.skc_reuse
@@ -57,12 +59,13 @@ struct inet_timewait_sock {
 #define tw_cookie		__tw_common.skc_cookie
 #define tw_dr			__tw_common.skc_tw_dr
 
-	__u32			tw_mark;
-	volatile unsigned char	tw_substate;
-	unsigned char		tw_rcv_wscale;
+	__u32			tw_mark; // 超时时间
+	volatile unsigned char	tw_substate; // 子状态，区分FIN_WAIT2和TIMEWAIT
+	unsigned char		tw_rcv_wscale; // 窗口缩放
 
 	/* Socket demultiplex comparisons on incoming packets. */
 	/* these three are in inet_sock */
+	// 下面部分和inet_scok中的成员相对应
 	__be16			tw_sport;
 	/* And these are ours. */
 	unsigned int		tw_kill		: 1,
@@ -72,7 +75,7 @@ struct inet_timewait_sock {
 				tw_tos		: 8;
 	u32			tw_txhash;
 	u32			tw_priority;
-	struct timer_list	tw_timer;
+	struct timer_list	tw_timer; // 超时计时器
 	struct inet_bind_bucket	*tw_tb;
 };
 #define tw_tclass tw_tos

@@ -1875,7 +1875,7 @@ enum netdev_ml_priv_type {
  *	FIXME: cleanup struct net_device such that network protocol info
  *	moves out.
  */
-
+// 每次申请新的net_device，都会多申请sizeof(struct igb_adapter)大小的内存空间
 struct net_device {
 	char			name[IFNAMSIZ];
 	struct netdev_name_node	*name_node;

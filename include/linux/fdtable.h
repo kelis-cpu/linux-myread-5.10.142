@@ -82,9 +82,10 @@ struct dentry;
  */
 static inline struct file *__fcheck_files(struct files_struct *files, unsigned int fd)
 {
-	struct fdtable *fdt = rcu_dereference_raw(files->fdt);
+	struct fdtable *fdt = rcu_dereference_raw(files->fdt); // 获得文件描述符位图表
 
 	if (fd < fdt->max_fds) {
+		// 根据句柄fd获取file结构体，fdt->fd可以理解为一个数组，以文件句柄fd为索引
 		fd = array_index_nospec(fd, fdt->max_fds);
 		return rcu_dereference_raw(fdt->fd[fd]);
 	}

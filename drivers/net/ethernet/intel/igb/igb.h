@@ -278,13 +278,16 @@ struct igb_tx_buffer {
 };
 
 struct igb_rx_buffer {
-	dma_addr_t dma;
+	dma_addr_t dma; /* DMA 地址 */
+	/* 物理页，与 dma 指向同一个内存区域 */
 	struct page *page;
 #if (BITS_PER_LONG > 32) || (PAGE_SIZE >= 65536)
 	__u32 page_offset;
 #else
 	__u16 page_offset;
 #endif
+// 初始化为USHRT_MAX(65535)，struct page->_refcount也初始化为USHRT_MAX
+// 使用该buffer时，将pagecnt_bias减一，判断该buffer是否可重用：struct page->_refcount - pagecnt_bias <= 1
 	__u16 pagecnt_bias;
 };
 
@@ -312,6 +315,7 @@ struct igb_ring_container {
 	u8 itr;				/* current ITR setting for ring */
 };
 
+// ringbuffer内部包含两个环形队列，一个内核使用，一个网卡硬件使用
 struct igb_ring {
 	struct igb_q_vector *q_vector;	/* backlink to q_vector */
 	struct net_device *netdev;	/* back pointer to net_device */
@@ -319,15 +323,15 @@ struct igb_ring {
 	struct device *dev;		/* device pointer for dma mapping */
 	union {				/* array of buffer info structs */
 		struct igb_tx_buffer *tx_buffer_info;
-		struct igb_rx_buffer *rx_buffer_info;
+		struct igb_rx_buffer *rx_buffer_info; // buffer起始地址，内核使用
 	};
-	void *desc;			/* descriptor ring memory */
+	void *desc;			/* descriptor ring memory */ // ring buffer描述符起始地址，网卡使用
 	unsigned long flags;		/* ring specific flags */
 	void __iomem *tail;		/* pointer to ring tail register */
 	dma_addr_t dma;			/* phys address of the ring */
 	unsigned int  size;		/* length of desc. ring in bytes */
 
-	u16 count;			/* number of desc. in the ring */
+	u16 count;			/* number of desc. in the ring */ // adapter->rx_ring_count,igb_alloc_q_vector中初始化
 	u8 queue_index;			/* logical index of the ring*/
 	u8 reg_idx;			/* physical index of the ring */
 	bool launchtime_enable;		/* true if LaunchTime is enabled */
@@ -338,9 +342,9 @@ struct igb_ring {
 	s32 locredit;			/* loCredit in bytes */
 
 	/* everything past this point are written often */
-	u16 next_to_clean;
-	u16 next_to_use;
-	u16 next_to_alloc;
+	u16 next_to_clean; // 网卡已经写入数据的位置
+	u16 next_to_use; // 下一个可使用的位置 一般保留一个unused描述符，next_to_use != next_to_clean
+	u16 next_to_alloc; // 待申请内核空间的位置
 
 	union {
 		/* TX */

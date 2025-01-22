@@ -296,7 +296,10 @@ NF_HOOK(uint8_t pf, unsigned int hook, struct net *net, struct sock *sk, struct 
 	struct net_device *in, struct net_device *out,
 	int (*okfn)(struct net *, struct sock *, struct sk_buff *))
 {
+	// 根据不同的规则对数据包进行过滤和修改，这些规则都是事先用户通过 iptables 工具调用 Netfilter 模块添加的。
 	int ret = nf_hook(pf, hook, net, sk, skb, in, out, okfn);
+	// 如果 nf_hook 返回非 1，将 nf_hook 的结果返回给 ip_rcv，skb 将不会继续被处理，到此为止；
+	// 如果 nf_hook 返回 1，表示 Netfilter 允许继续处理该数据包，然后将 skb 传入 ip_rcv_finish 函数继续执行。
 	if (ret == 1)
 		ret = okfn(net, sk, skb);
 	return ret;

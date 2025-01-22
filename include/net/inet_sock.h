@@ -29,7 +29,7 @@
  *
  * @faddr - Saved first hop address
  * @nexthop - Saved nexthop address in LSRR and SSRR
- * @is_strictroute - Strict source route
+ * @is_strictroute - Strict source route,严格的源路由
  * @srr_is_hit - Packet destination addr was our one
  * @is_changed - IP checksum more not valid
  * @rr_needaddr - Need to record addr of outgoing dev
@@ -39,7 +39,8 @@
 struct ip_options {
 	__be32		faddr;
 	__be32		nexthop;
-	unsigned char	optlen;
+	unsigned char	optlen; /* 标识 IP 首部中选项所占的字节数 */
+	/*  记录宽松路由或严格路由选项在 IP 首部中的偏移量, 即选项的第一个字节的地址减去 IP 首部的第一个字节的地址 */
 	unsigned char	srr;
 	unsigned char	rr;
 	unsigned char	ts;
