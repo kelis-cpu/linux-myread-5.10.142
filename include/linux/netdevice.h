@@ -4791,12 +4791,23 @@ int __init dev_proc_init(void);
 #else
 #define dev_proc_init() 0
 #endif
-
+/* ops: 这是目标网络设备的操作函数结构体，其中包含了发送函数的指针。
+ * skb: 这是要发送的 sk_buff。
+ * dev: 这是目标网络设备。
+ * more: 这是一个布尔值，用于指示是否还有更多的 sk_buff 等待发送。
+ */
 static inline netdev_tx_t __netdev_start_xmit(const struct net_device_ops *ops,
 					      struct sk_buff *skb, struct net_device *dev,
 					      bool more)
 {
+	/* 将当前 CPU 的 softnet_data 结构体中的 xmit.more 字段设置为 more，
+     * 用于记录是否还有更多的 sk_buff 等待发送。
+     */
 	__this_cpu_write(softnet_data.xmit.more, more);
+	/* 调用网络设备的发送函数，将 sk_buff 发送到目标网络设备，并返回发送结果。
+     * 函数指针 ops->ndo_start_xmit 指向了目标网络设备的具体发送函数。
+     */
+	//  对于igb 驱动程序来说 ndo_start_xmit 函数指针指向的是 igb_xmit_frame，由它具体发送到网卡，并返回发送结果。
 	return ops->ndo_start_xmit(skb, dev);
 }
 
@@ -4804,16 +4815,21 @@ static inline bool netdev_xmit_more(void)
 {
 	return __this_cpu_read(softnet_data.xmit.more);
 }
-
+/*
+ * skb: 这是要发送的 sk_buff。
+ * dev: 这是目标网络设备。
+ * txq: 这是网络设备的发送队列。
+ * more: 这是一个布尔值，用于指示是否还有更多的 sk_buff 等待发送。
+ */
 static inline netdev_tx_t netdev_start_xmit(struct sk_buff *skb, struct net_device *dev,
 					    struct netdev_queue *txq, bool more)
 {
-	const struct net_device_ops *ops = dev->netdev_ops;
+	const struct net_device_ops *ops = dev->netdev_ops; // 获取目标网络设备的操作函数结构体，其中包含了发送函数的指针。
 	netdev_tx_t rc;
-
+	 // 调用了网络设备的发送函数，将 sk_buff 发送到目标网络设备，并返回发送结果。
 	rc = __netdev_start_xmit(ops, skb, dev, more);
 	if (rc == NETDEV_TX_OK)
-		txq_trans_update(txq);
+		txq_trans_update(txq);  // 如果是的话，就调用 txq_trans_update 函数更新发送队列的传输计数器
 
 	return rc;
 }

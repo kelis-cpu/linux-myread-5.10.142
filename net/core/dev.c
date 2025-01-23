@@ -3037,7 +3037,11 @@ int netif_get_num_default_rss_queues(void)
 		1 : min_t(int, DEFAULT_MAX_NUM_RSS_QUEUES, num_online_cpus());
 }
 EXPORT_SYMBOL(netif_get_num_default_rss_queues);
-
+/* 该函数用于将队列 q 添加到网络设备的调度队列中，并触发网络数据发送的软中断 NET_TX_SOFTIRQ。其主要逻辑如下：
+1.禁用本地中断，这是为了确保在添加队列 q 到调度队列时，不会被其他中断打断，从而保持操作的原子性和可靠性；
+2.获取当前 CPU 的软中断数据结构 struct softnet_data，其中存储了与软中断相关的一些信息，例如软中断的处理队列；
+3.将队列 q 添加到当前 CPU 的软中断处理队列中。这是通过修改当前 CPU 的 output_queue_tailp 指向指向队列 q，并将队列 q 的 next_sched 指针置为 NULL 来实现的。这样，队列 q 就被添加到软中断队列的末尾；
+4.通过调用 raise_softirq_irqoff(NET_TX_SOFTIRQ) 来触发软中断 NET_TX_SOFTIRQ。对应的软中断处理程序 net_tx_action 将在后续执行，继续发送 Qdisc 队列中的数据包。*/
 static void __netif_reschedule(struct Qdisc *q)
 {
 	struct softnet_data *sd;
@@ -3054,6 +3058,8 @@ static void __netif_reschedule(struct Qdisc *q)
 
 void __netif_schedule(struct Qdisc *q)
 {
+	// 尝试获取队列的状态位 __QDISC_STATE_SCHED，如果该状态位之前未被设置，则通过 test_and_set_bit 设置该状态位，并且调用 __netif_reschedule 函数将队列加入网络设备的调度列表中；
+	// 如果之前已经设置了 __QDISC_STATE_SCHED，则说明该队列已经在调度列表中，无需重复操作。确保每个队列在调度列表中只会被添加一次，避免不必要的重复操作。
 	if (!test_and_set_bit(__QDISC_STATE_SCHED, &q->state))
 		__netif_reschedule(q);
 }
@@ -3572,51 +3578,61 @@ netdev_features_t netif_skb_features(struct sk_buff *skb)
 	return harmonize_features(skb, features);
 }
 EXPORT_SYMBOL(netif_skb_features);
-
+/* skb: 这是要发送的 sk_buff。
+ * dev: 这是目标网络设备。
+ * txq: 这是网络设备的发送队列。
+ * more: 这是一个布尔值，用于指示是否还有更多的 sk_buff 等待发送。
+ */
 static int xmit_one(struct sk_buff *skb, struct net_device *dev,
 		    struct netdev_queue *txq, bool more)
 {
 	unsigned int len;
 	int rc;
 
-	if (dev_nit_active(dev))
-		dev_queue_xmit_nit(skb, dev);
+	if (dev_nit_active(dev)) // 检查是否启用了 NIT（Network Interface Tap）功能。
+		dev_queue_xmit_nit(skb, dev);  // 如果启用了 NIT，将会通过 `dev_queue_xmit_nit` 函数将 sk_buff 发送给 NIT。
 
-	len = skb->len;
+	len = skb->len; // 保存 sk_buff 的长度，以便后续跟踪
 	PRANDOM_ADD_NOISE(skb, dev, txq, len + jiffies);
-	trace_net_dev_start_xmit(skb, dev);
-	rc = netdev_start_xmit(skb, dev, txq, more);
-	trace_net_dev_xmit(skb, rc, dev, len);
+	trace_net_dev_start_xmit(skb, dev); // 跟踪 sk_buff 开始发送的事件。
+	rc = netdev_start_xmit(skb, dev, txq, more); // 实际将 sk_buff 发送到网络设备，并返回发送结果。
+	trace_net_dev_xmit(skb, rc, dev, len); // 跟踪 sk_buff 发送完成的事件，并传递发送结果和之前保存的长度信息。
 
 	return rc;
 }
-
+/* first: 这是一个 sk_buff 链表的第一个 sk_buff，将从这个 sk_buff 开始发送。
+ * dev: 这是目标网络设备。
+ * txq: 这是网络设备的发送队列。
+ * ret: 这是一个整数指针，用于存储函数的返回值（发送结果）。
+ */
 struct sk_buff *dev_hard_start_xmit(struct sk_buff *first, struct net_device *dev,
 				    struct netdev_queue *txq, int *ret)
 {
+	// 当前要发送的 sk_buff，函数通过一个循环逐个处理链表中的 sk_buff，直到链表结束或者发送队列被停止。
 	struct sk_buff *skb = first;
 	int rc = NETDEV_TX_OK;
 
 	while (skb) {
 		struct sk_buff *next = skb->next;
-
+		// 用于标记当前的 sk_buff 不再位于发送队列上，这样可以确保在发送过程中不会重复处理同一个 sk_buff。
 		skb_mark_not_on_list(skb);
+		// 实际发送一个 sk_buff 到网络设备，并返回发送结果。next != NULL 参数用于指示是否还有下一个 sk_buff。
 		rc = xmit_one(skb, dev, txq, next != NULL);
-		if (unlikely(!dev_xmit_complete(rc))) {
+		if (unlikely(!dev_xmit_complete(rc))) { // 判断发送结果是否需要终止整个发送过程。
 			skb->next = next;
 			goto out;
 		}
 
 		skb = next;
-		if (netif_tx_queue_stopped(txq) && skb) {
-			rc = NETDEV_TX_BUSY;
+		if (netif_tx_queue_stopped(txq) && skb) {  // 检查发送队列是否被停止，并且还有待发送的 sk_buff。
+			rc = NETDEV_TX_BUSY; // 如果满足条件，说明发送队列已满，需要停止继续发送，并将 `rc` 设置为 `NETDEV_TX_BUSY`。
 			break;
 		}
 	}
 
 out:
 	*ret = rc;
-	return skb;
+	return skb; // 返回最后一个处理的 sk_buff，以便调用者继续处理剩余的 sk_buff。
 }
 
 static struct sk_buff *validate_xmit_vlan(struct sk_buff *skb,
@@ -3762,7 +3778,7 @@ static void qdisc_pkt_len_init(struct sk_buff *skb)
 		qdisc_skb_cb(skb)->pkt_len += (gso_segs - 1) * hdr_len;
 	}
 }
-
+// 选择调用 sch_direct_xmit 函数直接发送数据，还是通过 dev_qdisc_enqueue 函数把 skb 加入发送队列后调用 __qdisc_run 或 qdisc_run 函数继续处理。
 static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 				 struct net_device *dev,
 				 struct netdev_queue *txq)
@@ -3772,13 +3788,13 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 	bool contended;
 	int rc;
 
-	qdisc_calculate_pkt_len(skb, q);
-
+	qdisc_calculate_pkt_len(skb, q); // 计算数据包的长度，并设置 skb 的 pkt_len 字段
+	 // 检查队列是否不需要加锁 (TCQ_F_NOLOCK) 的情况
 	if (q->flags & TCQ_F_NOLOCK) {
 		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
 		if (likely(!netif_xmit_frozen_or_stopped(txq)))
 			qdisc_run(q);
-
+		// 在不加锁的情况下，如果需要释放内存，则进行释放
 		if (unlikely(to_free))
 			kfree_skb_list(to_free);
 		return rc;
@@ -3790,6 +3806,7 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 	 * This permits qdisc->running owner to get the lock more
 	 * often and dequeue packets faster.
 	 */
+	 // 加锁，进入临界区
 	contended = qdisc_is_running(q);
 	if (unlikely(contended))
 		spin_lock(&q->busylock);
@@ -3797,7 +3814,7 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 	spin_lock(root_lock);
 	if (unlikely(test_bit(__QDISC_STATE_DEACTIVATED, &q->state))) {
 		__qdisc_drop(skb, &to_free);
-		rc = NET_XMIT_DROP;
+		rc = NET_XMIT_DROP; // 队列已被 deactive，直接丢弃数据包
 	} else if ((q->flags & TCQ_F_CAN_BYPASS) && !qdisc_qlen(q) &&
 		   qdisc_run_begin(q)) {
 		/*
@@ -3808,7 +3825,7 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 
 		qdisc_bstats_update(q, skb);
 
-		if (sch_direct_xmit(skb, q, dev, txq, root_lock, true)) {
+		if (sch_direct_xmit(skb, q, dev, txq, root_lock, true)) { // 队列可以绕过，且队列为空，直接发送数据包
 			if (unlikely(contended)) {
 				spin_unlock(&q->busylock);
 				contended = false;
@@ -3819,14 +3836,14 @@ static inline int __dev_xmit_skb(struct sk_buff *skb, struct Qdisc *q,
 		qdisc_run_end(q);
 		rc = NET_XMIT_SUCCESS;
 	} else {
-		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK;
-		if (qdisc_run_begin(q)) {
+		rc = q->enqueue(skb, q, &to_free) & NET_XMIT_MASK; // 将数据包插入队列，并进行发送
+		if (qdisc_run_begin(q)) { // qdisc_run_begin(q) 判断是否可以开始运行队列调度器；
 			if (unlikely(contended)) {
 				spin_unlock(&q->busylock);
 				contended = false;
 			}
-			__qdisc_run(q);
-			qdisc_run_end(q);
+			__qdisc_run(q); // 调用 __qdisc_run 函数来实际运行队列调度器；
+			qdisc_run_end(q); // 通过 qdisc_run_end(q) 结束队列调度器的运行
 		}
 	}
 	spin_unlock(root_lock);
@@ -4088,6 +4105,8 @@ struct netdev_queue *netdev_core_pick_tx(struct net_device *dev,
  *      the BH enable code must have IRQs enabled so that it will not deadlock.
  *          --BLG
  */
+ // 该函数将数据包添加到网络设备的发送队列，并将其排队，通过设备的底层驱动程序发送到网络上。
+//  其功能包括数据包的预处理，选择适当的发送队列和排队，以及将数据包传递给适当的网络设备的硬件发送函数。
 static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 {
 	struct net_device *dev = skb->dev;
@@ -4095,24 +4114,25 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 	struct Qdisc *q;
 	int rc = -ENOMEM;
 	bool again = false;
-
+	// 重置数据包的 MAC 头指针，以准备进行硬件头部的填充
 	skb_reset_mac_header(skb);
+	// 检查数据包的长度是否正确，如果长度错误，则可能导致发送错误
 	skb_assert_len(skb);
-
+	// 检查数据包是否需要进行时间戳处理
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_SCHED_TSTAMP))
 		__skb_tstamp_tx(skb, NULL, skb->sk, SCM_TSTAMP_SCHED);
 
 	/* Disable soft irqs for various locks below. Also
 	 * stops preemption for RCU.
 	 */
-	rcu_read_lock_bh();
+	rcu_read_lock_bh(); // 禁用软中断，保护下面的各种锁
 
-	skb_update_prio(skb);
+	skb_update_prio(skb); // 更新数据包的优先级
 
 	qdisc_pkt_len_init(skb);
 #ifdef CONFIG_NET_CLS_ACT
 	skb->tc_at_ingress = 0;
-# ifdef CONFIG_NET_EGRESS
+# ifdef CONFIG_NET_EGRESS // 如果支持出口（egress）处理，执行 egress 处理
 	if (static_branch_unlikely(&egress_needed_key)) {
 		skb = sch_handle_egress(skb, &rc, dev);
 		if (!skb)
@@ -4127,12 +4147,12 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 		skb_dst_drop(skb);
 	else
 		skb_dst_force(skb);
-
+	 // 选择一个发送队列
 	txq = netdev_core_pick_tx(dev, skb, sb_dev);
-	q = rcu_dereference_bh(txq->qdisc);
+	q = rcu_dereference_bh(txq->qdisc);  // 获取设备的发送队列
 
-	trace_net_dev_queue(skb);
-	if (q->enqueue) {
+	trace_net_dev_queue(skb); // 打印调试信息，跟踪数据包的发送过程
+	if (q->enqueue) { // 如果设备有发送队列（q->enqueue 存在），则执行发送队列的发送函数 __dev_xmit_skb
 		rc = __dev_xmit_skb(skb, q, dev, txq);
 		goto out;
 	}
@@ -4149,6 +4169,7 @@ static int __dev_queue_xmit(struct sk_buff *skb, struct net_device *sb_dev)
 	 * Check this and shot the lock. It is not prone from deadlocks.
 	 *Either shot noqueue qdisc, it is even simpler 8)
 	 */
+	 // 如果设备没有队列，则直接执行硬件发送函数，例如回环、隧道等设备
 	if (dev->flags & IFF_UP) {
 		int cpu = smp_processor_id(); /* ok because BHs are off */
 
@@ -4195,7 +4216,7 @@ recursion_alert:
 	kfree_skb_list(skb);
 	return rc;
 out:
-	rcu_read_unlock_bh();
+	rcu_read_unlock_bh(); // 释放锁和资源，并根据结果返回适当的错误码
 	return rc;
 }
 
@@ -4899,7 +4920,10 @@ EXPORT_SYMBOL(netif_rx_any_context);
 static __latent_entropy void net_tx_action(struct softirq_action *h)
 {
 	struct softnet_data *sd = this_cpu_ptr(&softnet_data);
-
+	/* 这部分代码处理发送队列中的已完成的数据包。
+     * 如果 sd->completion_queue 不为空（即有完成的数据包），
+     * 则从发送队列中移除这些数据包并执行相应的回调函数。
+     */
 	if (sd->completion_queue) {
 		struct sk_buff *clist;
 
@@ -4907,7 +4931,7 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 		clist = sd->completion_queue;
 		sd->completion_queue = NULL;
 		local_irq_enable();
-
+		// 循环遍历完成队列中的数据包，并根据数据包的状态执行相应的操作
 		while (clist) {
 			struct sk_buff *skb = clist;
 
@@ -4915,10 +4939,10 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 
 			WARN_ON(refcount_read(&skb->users));
 			if (likely(get_kfree_skb_cb(skb)->reason == SKB_REASON_CONSUMED))
-				trace_consume_skb(skb);
+				trace_consume_skb(skb); // 如果数据包被成功发送并成功接收，则通过 trace_consume_skb 进行追踪记录；
 			else
 				trace_kfree_skb(skb, net_tx_action);
-
+			// 根据数据包是否可克隆，调用相应的释放函数 __kfree_skb 或 __kfree_skb_defer 进行数据包的释放。
 			if (skb->fclone != SKB_FCLONE_UNAVAILABLE)
 				__kfree_skb(skb);
 			else
@@ -4927,7 +4951,10 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 
 		__kfree_skb_flush();
 	}
-
+	/* 这部分代码处理输出队列中的队列调度器（Qdisc）。
+     * 如果 sd->output_queue 不为空（即有队列调度器需要运行），则遍历输出队列中的所有队列调度器，
+     * 并运行它们的 qdisc_run 函数。
+     */
 	if (sd->output_queue) {
 		struct Qdisc *head;
 
@@ -4942,7 +4969,9 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 		while (head) {
 			struct Qdisc *q = head;
 			spinlock_t *root_lock = NULL;
-
+			 /* 在执行前需要确保在设置 __QDISC_STATE_SCHED 标志之前，先读取 head->next_sched，
+             * 以避免在无锁队列调度器中出现数据竞争。
+             */
 			head = head->next_sched;
 
 			/* We need to make sure head->next_sched is read
@@ -4952,6 +4981,9 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 
 			if (!(q->flags & TCQ_F_NOLOCK)) {
 				root_lock = qdisc_lock(q);
+				/* 如果队列调度器的 flags 中没有设置 TCQ_F_NOLOCK（即不是无锁队列调度器），
+                 * 则通过 qdisc_lock(q) 获取锁，并在执行后通过 spin_unlock(root_lock) 释放锁。
+                 */
 				spin_lock(root_lock);
 			} else if (unlikely(test_bit(__QDISC_STATE_DEACTIVATED,
 						     &q->state))) {
@@ -4963,11 +4995,16 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 				 * qdisc_deactivate() and some_qdisc_is_busy()
 				 * for lockless qdisc.
 				 */
+				  /* 如果队列调度器的 flags 中设置了 TCQ_F_NOLOCK，则说明是无锁队列调度器。
+                 * 如果队列调度器的 state 中设置了 __QDISC_STATE_DEACTIVATED 标志，
+                 * 说明队列调度器已经被停用，此时直接清除 __QDISC_STATE_SCHED 标志并继续下一个队列调度器的处理。
+                 */
 				clear_bit(__QDISC_STATE_SCHED, &q->state);
 				continue;
 			}
 
 			clear_bit(__QDISC_STATE_SCHED, &q->state);
+			// 如果 sd->output_queue 不为空（即有队列调度器需要运行），则遍历 sd->output_queue 中的所有 Qdisc 队列，并运行 qdisc_run 函数，从而完成网络数据包的发送
 			qdisc_run(q);
 			if (root_lock)
 				spin_unlock(root_lock);
@@ -4975,7 +5012,9 @@ static __latent_entropy void net_tx_action(struct softirq_action *h)
 
 		rcu_read_unlock();
 	}
-
+	/* 这部分代码调用 xfrm_dev_backlog 函数，处理 IPsec 的后处理队列，即处理解密和验证等操作。
+     * 该函数负责在软中断上下文中完成 IPsec 后处理任务。
+     */
 	xfrm_dev_backlog(sd);
 }
 

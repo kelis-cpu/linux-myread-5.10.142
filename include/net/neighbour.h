@@ -459,13 +459,13 @@ static inline int neigh_hh_bridge(struct hh_cache *hh, struct sk_buff *skb)
 	return 0;
 }
 #endif
-
+// 用于向邻居（Neighbor）发送数据包并利用硬件头部缓存（hh_cache）的函数
 static inline int neigh_hh_output(const struct hh_cache *hh, struct sk_buff *skb)
 {
 	unsigned int hh_alen = 0;
 	unsigned int seq;
 	unsigned int hh_len;
-
+	// 在读取 hh_cache 前获取锁并检查数据长度
 	do {
 		seq = read_seqbegin(&hh->hh_lock);
 		hh_len = READ_ONCE(hh->hh_len);
@@ -476,8 +476,10 @@ static inline int neigh_hh_output(const struct hh_cache *hh, struct sk_buff *skb
 			 * the unaligned size but not for the aligned size:
 			 * check headroom explicitly.
 			 */
+			 // 检查是否有足够的 headroom 来存放硬件头部缓存的数据
 			if (likely(skb_headroom(skb) >= HH_DATA_MOD)) {
 				/* this is inlined by gcc */
+				// 从硬件头部缓存复制数据到 sk_buff 的头部
 				memcpy(skb->data - HH_DATA_MOD, hh->hh_data,
 				       HH_DATA_MOD);
 			}
@@ -490,14 +492,14 @@ static inline int neigh_hh_output(const struct hh_cache *hh, struct sk_buff *skb
 			}
 		}
 	} while (read_seqretry(&hh->hh_lock, seq));
-
+	 // 检查 headroom 是否足够来存放硬件头部缓存的数据
 	if (WARN_ON_ONCE(skb_headroom(skb) < hh_alen)) {
-		kfree_skb(skb);
+		kfree_skb(skb); // 如果 headroom 不足，释放 sk_buff，并返回 NET_XMIT_DROP 错误码
 		return NET_XMIT_DROP;
 	}
-
+	// 将 sk_buff 的数据指针前移 hh_len 字节，即设置正确的数据头部
 	__skb_push(skb, hh_len);
-	return dev_queue_xmit(skb);
+	return dev_queue_xmit(skb); // 将 sk_buff 发送出去
 }
 
 static inline int neigh_output(struct neighbour *n, struct sk_buff *skb,
@@ -508,11 +510,13 @@ static inline int neigh_output(struct neighbour *n, struct sk_buff *skb,
 	/* n->nud_state and hh->hh_len could be changed under us.
 	 * neigh_hh_output() is taking care of the race later.
 	 */
+	// 检查邻居的状态（NUD_CONNECTED）以及缓存是否有效（hh_len），如果缓存有效则直接发送数据包。
 	if (!skip_cache &&
 	    (READ_ONCE(n->nud_state) & NUD_CONNECTED) &&
 	    READ_ONCE(hh->hh_len))
 		return neigh_hh_output(hh, skb);
-
+	// 否则调用邻居的输出函数（output）发送数据包
+	// 实际指向的是 neigh_resolve_output 函数，内部可能有 arp 请求）发送数据包
 	return n->output(n, skb);
 }
 

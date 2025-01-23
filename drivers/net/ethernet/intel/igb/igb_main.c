@@ -6152,42 +6152,44 @@ static int igb_tx_map(struct igb_ring *tx_ring,
 		      struct igb_tx_buffer *first,
 		      const u8 hdr_len)
 {
-	struct sk_buff *skb = first->skb;
-	struct igb_tx_buffer *tx_buffer;
-	union e1000_adv_tx_desc *tx_desc;
-	skb_frag_t *frag;
-	dma_addr_t dma;
-	unsigned int data_len, size;
-	u32 tx_flags = first->tx_flags;
-	u32 cmd_type = igb_tx_cmd_type(skb, tx_flags);
-	u16 i = tx_ring->next_to_use;
+	struct sk_buff *skb = first->skb; // 局部变量 skb，并将其初始化为 first->skb
+	struct igb_tx_buffer *tx_buffer; // 用于后续遍历 sk_buff 分片时保存当前分片所对应的发送缓冲区
+	union e1000_adv_tx_desc *tx_desc; // 用于指向当前处理的发送描述符
+	skb_frag_t *frag; // 用于遍历 sk_buff 的分片
+	dma_addr_t dma; // 用于保存 DMA 映射的物理地址
+	unsigned int data_len, size; // 分别用于保存 sk_buff 数据部分的长度和当前处理的分片的长度
+	u32 tx_flags = first->tx_flags; // 用于保存当前 sk_buff 的发送标志
+	u32 cmd_type = igb_tx_cmd_type(skb, tx_flags); // 用于保存发送描述符的命令类型，通过调用 igb_tx_cmd_type 函数获取
+	u16 i = tx_ring->next_to_use; // 用于保存当前处理的发送描述符的索引，初始值为 tx_ring->next_to_use
 
-	tx_desc = IGB_TX_DESC(tx_ring, i);
+	tx_desc = IGB_TX_DESC(tx_ring, i); // 获取 tx_ring 环中索引为 i 的发送描述符的地址
 
 	igb_tx_olinfo_status(tx_ring, tx_desc, tx_flags, skb->len - hdr_len);
-
+	// 保存 sk_buff 头的长度。skb_headlen 函数返回 sk_buff 头的长度，即不包含数据部分
 	size = skb_headlen(skb);
-	data_len = skb->data_len;
-
+	data_len = skb->data_len; // 保存 sk_buff 的总数据长度，包含所有分片的数据长度
+	// 将 skb->data 中的数据映射到 DMA 地址空间，并将映射后的物理地址保存在 dma 中。
+	// 不涉及传统的内存拷贝（memcpy）。它是用于将一个单个的内存数据块映射到 DMA（Direct Memory Access）地址空间的函数
 	dma = dma_map_single(tx_ring->dev, skb->data, size, DMA_TO_DEVICE);
 
-	tx_buffer = first;
-
+	tx_buffer = first; // 将 tx_buffer 初始化为 first，表示当前正在处理第一个发送缓冲区
+	// 进入一个循环，遍历 sk_buff 的分片。此循环用于将 sk_buff 的所有分片映射到相应的发送描述符中，并进行切割和填充。
 	for (frag = &skb_shinfo(skb)->frags[0];; frag++) {
-		if (dma_mapping_error(tx_ring->dev, dma))
+		if (dma_mapping_error(tx_ring->dev, dma)) // 使用 dma_mapping_error 函数检查 DMA 映射是否成功
 			goto dma_error;
 
 		/* record length, and DMA address */
+		// 设置 tx_buffer 的 DMA 映射长度和 DMA 映射物理地址
 		dma_unmap_len_set(tx_buffer, len, size);
 		dma_unmap_addr_set(tx_buffer, dma, dma);
-
+		// 将发送描述符的 buffer_addr 字段设置为当前分片的 DMA 地址
 		tx_desc->read.buffer_addr = cpu_to_le64(dma);
-
+		// 使用一个内部循环，切割并填充发送描述符，直到处理完所有数据
 		while (unlikely(size > IGB_MAX_DATA_PER_TXD)) {
 			tx_desc->read.cmd_type_len =
-				cpu_to_le32(cmd_type ^ IGB_MAX_DATA_PER_TXD);
+				cpu_to_le32(cmd_type ^ IGB_MAX_DATA_PER_TXD); // 在内部循环中，将发送描述符的 cmd_type_len 字段设置为当前切割片段的大小
 
-			i++;
+			i++; // 递增 i，并将 tx_desc 指针指向下一个发送描述符
 			tx_desc++;
 			if (i == tx_ring->count) {
 				tx_desc = IGB_TX_DESC(tx_ring, 0);
@@ -6200,10 +6202,10 @@ static int igb_tx_map(struct igb_ring *tx_ring,
 
 			tx_desc->read.buffer_addr = cpu_to_le64(dma);
 		}
-
+		// 若 data_len 等于 0，则表示所有数据都已处理完毕，退出外部循环
 		if (likely(!data_len))
 			break;
-
+		// 否则，将发送描述符的 cmd_type_len 字段设置为当前剩余数据的大小
 		tx_desc->read.cmd_type_len = cpu_to_le32(cmd_type ^ size);
 
 		i++;
@@ -6216,7 +6218,7 @@ static int igb_tx_map(struct igb_ring *tx_ring,
 
 		size = skb_frag_size(frag);
 		data_len -= size;
-
+		// 将 dma 初始化为当前分片的 DMA 地址
 		dma = skb_frag_dma_map(tx_ring->dev, frag, 0,
 				       size, DMA_TO_DEVICE);
 
@@ -6224,14 +6226,16 @@ static int igb_tx_map(struct igb_ring *tx_ring,
 	}
 
 	/* write last descriptor with RS and EOP bits */
+	// 将发送描述符的 cmd_type 字段进行设置，添加片段的大小和结束标志 IGB_TXD_DCMD
 	cmd_type |= size | IGB_TXD_DCMD;
 	tx_desc->read.cmd_type_len = cpu_to_le32(cmd_type);
-
+	 // 将当前发送缓冲区的数据长度添加到环的发送队列中
 	netdev_tx_sent_queue(txring_txq(tx_ring), first->bytecount);
 
 	/* set the timestamp */
+	 // 将当前发送缓冲区的时间戳设置为当前时间，通过调用 jiffies 函数实现
 	first->time_stamp = jiffies;
-
+	// 使用 skb_tx_timestamp 函数设置 sk_buff 的时间戳信息
 	skb_tx_timestamp(skb);
 
 	/* Force memory writes to complete before letting h/w know there
@@ -6241,20 +6245,27 @@ static int igb_tx_map(struct igb_ring *tx_ring,
 	 * We also need this memory barrier to make certain all of the
 	 * status bits have been updated before next_to_watch is written.
 	 */
+	 /* 强制内存写入在让硬件知道有新描述符可获取之前完成
+     * （仅适用于弱序内存模型的架构，如 IA-64）。
+     * 我们还需要此内存屏障，以确保在写入 next_to_watch 值之前，所有状态位都已更新。
+     */
+    // 使用 dma_wmb 内存屏障，确保内存写入完成，以防止硬件在获取新描述符前读取不正确的状态。
 	dma_wmb();
 
 	/* set next_to_watch value indicating a packet is present */
-	first->next_to_watch = tx_desc;
+	first->next_to_watch = tx_desc;  // 设置 first->next_to_watch，指向当前发送描述符，表示有数据包等待发送
 
-	i++;
+	i++; // 递增 i，并将 tx_ring->next_to_use 更新为 i，表示指向下一个可用的发送描述符
 	if (i == tx_ring->count)
 		i = 0;
 
 	tx_ring->next_to_use = i;
 
 	/* Make sure there is space in the ring for the next send. */
+	// 使用 igb_maybe_stop_tx 函数，检查发送环的剩余描述符是否足够，以确保环中有足够的空间来发送更多数据。
+	// 如果没有剩余的描述符，设置dev状态为QUEUE_STATE_DRV_XOFF，下面netif_xmit_stopped函数委任为该接口处于停滞了
 	igb_maybe_stop_tx(tx_ring, DESC_NEEDED);
-
+	// 如果网络接口处于停止状态，或者没有更多数据需要发送，则将 i 的值写入环的寄存器 tx_ring->tail，告诉硬件从指定描述符开始发送数据
 	if (netif_xmit_stopped(txring_txq(tx_ring)) || !netdev_xmit_more()) {
 		writel(i, tx_ring->tail);
 	}
@@ -6379,27 +6390,33 @@ netdev_tx_t igb_xmit_frame_ring(struct sk_buff *skb,
 	u8 hdr_len = 0;
 
 	/* need: 1 descriptor per page * PAGE_SIZE/IGB_MAX_DATA_PER_TXD,
+			//额外需要一个描述符来处理头部数据（skb_headlen），因为头部可能不完整，需要额外的描述符来处理。
 	 *       + 1 desc for skb_headlen/IGB_MAX_DATA_PER_TXD,
+	 		//为了避免尾部（tail）指针碰到头部（head）指针，通常在环形缓冲区中保留一定数量的描述符空间作为间隔，这里是 2 个描述符的间隔。
 	 *       + 2 desc gap to keep tail from touching head,
+	 		//最后，还需要一个描述符用于上下文描述。在某些网络设备中，需要在发送队列的起始位置设置一个上下文描述符，用于指定发送数据包的相关信息。
 	 *       + 1 desc for context descriptor,
 	 * otherwise try next time
 	 */
+	 // 计算需要的描述符数量 count：根据 sk_buff 的头部长度计算需要的描述符数量，并加上每个分片的描述符数量。
 	for (f = 0; f < skb_shinfo(skb)->nr_frags; f++)
 		count += TXD_USE_COUNT(skb_frag_size(
 						&skb_shinfo(skb)->frags[f]));
 
-	if (igb_maybe_stop_tx(tx_ring, count + 3)) {
+	if (igb_maybe_stop_tx(tx_ring, count + 3)) { // 如果发送环可用的描述符不足，通过调用 igb_maybe_stop_tx 函数尝试暂停发送。
 		/* this is a hard error */
-		return NETDEV_TX_BUSY;
+		return NETDEV_TX_BUSY; // 如果暂停成功则返回 NETDEV_TX_BUSY。
 	}
 
 	/* record the location of the first descriptor for this packet */
-	first = &tx_ring->tx_buffer_info[tx_ring->next_to_use];
+	first = &tx_ring->tx_buffer_info[tx_ring->next_to_use]; // 记录第一个描述符的位置：将 sk_buff 的信息记录在发送环的第一个描述符中
 	first->type = IGB_TYPE_SKB;
 	first->skb = skb;
 	first->bytecount = skb->len;
 	first->gso_segs = 1;
-
+	/* 处理时间戳相关逻辑：如果 sk_buff 的标志中包含 SKBTX_HW_TSTAMP， 
+     * 则表示需要进行硬件时间戳记录，如果满足条件，则记录相关的时间戳信息。
+     */
 	if (unlikely(skb_shinfo(skb)->tx_flags & SKBTX_HW_TSTAMP)) {
 		struct igb_adapter *adapter = netdev_priv(tx_ring->netdev);
 
@@ -6417,25 +6434,26 @@ netdev_tx_t igb_xmit_frame_ring(struct sk_buff *skb,
 			adapter->tx_hwtstamp_skipped++;
 		}
 	}
-
+	// 处理 VLAN 相关逻辑：如果 sk_buff 中包含 VLAN 标签，将 VLAN 相关信息填充到发送描述符的标志字段中。
 	if (skb_vlan_tag_present(skb)) {
 		tx_flags |= IGB_TX_FLAGS_VLAN;
 		tx_flags |= (skb_vlan_tag_get(skb) << IGB_TX_FLAGS_VLAN_SHIFT);
 	}
 
 	/* record initial flags and protocol */
+	// 记录初始标志和协议
 	first->tx_flags = tx_flags;
 	first->protocol = protocol;
-
+	// 调用 igb_tso 函数进行 TSO (TCP Segmentation Offloading) 处理：如果支持 TSO，将会在这一步完成。
 	tso = igb_tso(tx_ring, first, &hdr_len);
 	if (tso < 0)
 		goto out_drop;
 	else if (!tso)
 		igb_tx_csum(tx_ring, first);
-
+	// 最后调用 igb_tx_map 函数，将 sk_buff 映射到发送描述符，进行真正的数据帧发送。
 	if (igb_tx_map(tx_ring, first, hdr_len))
 		goto cleanup_tx_tstamp;
-
+	// 如果在上述过程中出现错误，将会进行相应的清理操作，并返回 NETDEV_TX_OK 表示发送成功。
 	return NETDEV_TX_OK;
 
 out_drop:
@@ -6454,18 +6472,26 @@ cleanup_tx_tstamp:
 
 	return NETDEV_TX_OK;
 }
-
+/* adapter 是指向 igb_adapter 结构体的指针，表示 Intel Gigabit Ethernet 驱动的适配器数据结构。
+ * skb 是指向 sk_buff 结构体的指针，表示要发送的网络数据包。
+ */
 static inline struct igb_ring *igb_tx_queue_mapping(struct igb_adapter *adapter,
 						    struct sk_buff *skb)
 {
+	// 获取 sk_buff 的队列映射索引，即将该数据包发送到哪个发送队列的索引。
 	unsigned int r_idx = skb->queue_mapping;
 
-	if (r_idx >= adapter->num_tx_queues)
-		r_idx = r_idx % adapter->num_tx_queues;
+	if (r_idx >= adapter->num_tx_queues) // 检查队列映射索引是否大于或等于适配器的发送队列数量。
+		r_idx = r_idx % adapter->num_tx_queues; // 如果队列映射索引大于等于发送队列数量，则对发送队列数量取模，使得索引在合法范围内。
 
-	return adapter->tx_ring[r_idx];
+	return adapter->tx_ring[r_idx];  // 返回适配器 adapter 中相应的发送队列 igb_ring。这样，数据包将被映射到正确的发送队列上，以便进行发送。
 }
-
+/* skb: 这是要发送的 sk_buff 数据帧。
+ * netdev: 这是网络设备结构体，代表 Intel Gigabit Ethernet 网络设备。
+ * adapter: netdev_priv(netdev) 将从网络设备的私有数据指针中获取指向 struct igb_adapter 的指针。
+ * struct igb_adapter 是 igb 驱动程序的适配器结构体，包含了与网络设备相关的信息和状态。
+ */
+//  这个函数的目的是确保数据包按照队列映射索引分配到适配器的不同发送队列上，从而实现多队列发送，提高网络性能和吞吐量。多队列发送可以充分利用多核处理器的并行能力，同时减少发送队列的竞争，提高网络性能。
 static netdev_tx_t igb_xmit_frame(struct sk_buff *skb,
 				  struct net_device *netdev)
 {
@@ -6474,9 +6500,18 @@ static netdev_tx_t igb_xmit_frame(struct sk_buff *skb,
 	/* The minimum packet size with TCTL.PSP set is 17 so pad the skb
 	 * in order to meet this minimum size requirement.
 	 */
+	 /* 检查是否需要将 skb 填充（pad）到最小数据包大小（17 字节）。
+     * 在 Intel Gigabit Ethernet 驱动程序中，设置了 `TCTL.PSP` 寄存器时，数据包的最小大小是 17 字节，
+     * 如果小于这个值，驱动程序会填充空白数据，使其达到最小大小。
+     */
 	if (skb_put_padto(skb, 17))
-		return NETDEV_TX_OK;
-
+		return NETDEV_TX_OK; // 如果填充成功，说明 skb 长度小于 17 字节，此时函数直接返回 NETDEV_TX_OK 表示发送成功。
+	/* 调用 igb_xmit_frame_ring 函数，该函数负责将数据帧放入指定的发送队列中。
+     * igb_tx_queue_mapping 函数用于确定数据包应该发送到哪个发送队列。
+     * 函数最终返回发送结果。
+     */
+	 // 先调用 igb_tx_queue_mapping 函数选择一个发送 Ring Buffer，
+	 // 然后调用 igb_xmit_frame_ring 函数将数据包挂到该 Ring Buffer 中
 	return igb_xmit_frame_ring(skb, igb_tx_queue_mapping(adapter, skb));
 }
 

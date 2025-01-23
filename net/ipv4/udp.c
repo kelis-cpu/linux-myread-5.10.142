@@ -874,7 +874,10 @@ void udp_set_csum(bool nocheck, struct sk_buff *skb,
 	}
 }
 EXPORT_SYMBOL(udp_set_csum);
-
+ /* 
+ 	* fl4 是IPv4的路由信息。cork 是 inet_cork 结构体，
+	* 用于处理GSO（Generic Segmentation Offload）和校验和等相关选项。
+*/
 static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 			struct inet_cork *cork)
 {
@@ -891,34 +894,43 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 	/*
 	 * Create a UDP header
 	 */
+	 // 创建UDP头部，uh 指向 skb 中的UDP头部位置。
 	uh = udp_hdr(skb);
+	// 将UDP头部的源端口 (source) 和目标端口 (dest) 设置为套接字的源端口和 fl4 结构体中的目标端口。
 	uh->source = inet->inet_sport;
 	uh->dest = fl4->fl4_dport;
-	uh->len = htons(len);
-	uh->check = 0;
-
+	uh->len = htons(len);  // 将UDP头部的长度 (len) 设置为数据报的总长度，并将字节序转换为网络字节序（大端序）。
+	uh->check = 0; // 将UDP头部的校验和 (check) 初始化为0。
+	// 如果启用了GSO（Generic Segmentation Offload），则处理GSO相关的情况。
 	if (cork->gso_size) {
+		// hlen 是数据包的网络层头部长度和UDP头部的长度之和
 		const int hlen = skb_network_header_len(skb) +
 				 sizeof(struct udphdr);
-
+		// 检查UDP头部和GSO大小是否超过了片段大小 (cork->fragsize)，如果超过则释放 skb 并返回错误码 -EINVAL。
 		if (hlen + cork->gso_size > cork->fragsize) {
 			kfree_skb(skb);
 			return -EINVAL;
 		}
+		// 检查有效负载的长度是否超过了允许的GSO大小乘以最大UDP段数 (UDP_MAX_SEGMENTS)。
 		if (datalen > cork->gso_size * UDP_MAX_SEGMENTS) {
 			kfree_skb(skb);
 			return -EINVAL;
 		}
+		// 检查套接字是否禁用了校验和 (sk->sk_no_check_tx)。
 		if (sk->sk_no_check_tx) {
 			kfree_skb(skb);
 			return -EINVAL;
 		}
+		 /* 检查数据报的校验和类型，如果不是部分校验和 (CHECKSUM_PARTIAL)，
+         * 或者是UDP-Lite协议，或者经过了转发处理（dst_xfrm(skb_dst(skb))），
+         * 则释放 skb 并返回错误码 -EIO。
+         */
 		if (skb->ip_summed != CHECKSUM_PARTIAL || is_udplite ||
 		    dst_xfrm(skb_dst(skb))) {
 			kfree_skb(skb);
 			return -EIO;
 		}
-
+		// 如果需要拆分GSO，设置skb_shinfo(skb)结构体中的GSO信息，并跳转到csum_partial标签处。
 		if (datalen > cork->gso_size) {
 			skb_shinfo(skb)->gso_size = cork->gso_size;
 			skb_shinfo(skb)->gso_type = SKB_GSO_UDP_L4;
@@ -927,7 +939,7 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 		}
 		goto csum_partial;
 	}
-
+	// 根据是否是UDP-Lite协议，选择计算UDP校验和的方法
 	if (is_udplite)  				 /*     UDP-Lite      */
 		csum = udplite_csum(skb);
 
@@ -938,7 +950,9 @@ static int udp_send_skb(struct sk_buff *skb, struct flowi4 *fl4,
 
 	} else if (skb->ip_summed == CHECKSUM_PARTIAL) { /* UDP hardware csum */
 csum_partial:
-
+		/* 如果数据报的校验和类型为部分校验和 (CHECKSUM_PARTIAL)，
+         * 则调用udp4_hwcsum函数计算硬件卸载的校验和，并跳转到send标签处。
+         */
 		udp4_hwcsum(skb, fl4->saddr, fl4->daddr);
 		goto send;
 
@@ -946,13 +960,14 @@ csum_partial:
 		csum = udp_csum(skb);
 
 	/* add protocol-dependent pseudo-header */
+	// 在计算完UDP校验和后，使用csum_tcpudp_magic函数添加协议相关的伪首部（pseudo-header），并计算最终的UDP校验和。
 	uh->check = csum_tcpudp_magic(fl4->saddr, fl4->daddr, len,
 				      sk->sk_protocol, csum);
 	if (uh->check == 0)
-		uh->check = CSUM_MANGLED_0;
+		uh->check = CSUM_MANGLED_0; // 如果最终的UDP校验和值为0，则将其设置为CSUM_MANGLED_0，以避免零校验和。
 
 send:
-	err = ip_send_skb(sock_net(sk), skb);
+	err = ip_send_skb(sock_net(sk), skb);  // 调用ip_send_skb函数将数据报发送出去，并将发送结果保存在err中。
 	if (err) {
 		if (err == -ENOBUFS && !inet->recverr) {
 			UDP_INC_STATS(sock_net(sk),
@@ -1042,23 +1057,28 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 	__be16 dport;
 	u8  tos;
 	int err, is_udplite = IS_UDPLITE(sk);
-	int corkreq = READ_ONCE(up->corkflag) || msg->msg_flags&MSG_MORE;
+	int corkreq = READ_ONCE(up->corkflag) || msg->msg_flags&MSG_MORE; // 延迟发送标志
 	int (*getfrag)(void *, char *, int, int, int, struct sk_buff *);
 	struct sk_buff *skb;
 	struct ip_options_data opt_copy;
 
-	if (len > 0xFFFF)
+	if (len > 0xFFFF) // 检查数据长度是否超过最大限制（65535 字节）
 		return -EMSGSIZE;
 
 	/*
 	 *	Check the flags.
 	 */
-
+	/* 检查消息的标志位中是否包含 MSG_OOB。如果包含，表示请求发送带外数据，
+     * 但由于 UDP 不支持带外数据传输，因此返回错误码 -EOPNOTSUPP 表示不支持操作。
+     */
 	if (msg->msg_flags & MSG_OOB) /* Mirror BSD error message compatibility */
 		return -EOPNOTSUPP;
-
+	/* 根据 is_udplite 变量的值，选择相应的函数指针赋值给 getfrag。
+     * 如果 is_udplite 为真，表示使用 UDPLite 协议，赋值为 udplite_getfrag 函数指针，
+     * 否则赋值为 ip_generic_getfrag 函数指针。
+     */
 	getfrag = is_udplite ? udplite_getfrag : ip_generic_getfrag;
-
+	// 如果存在挂起的数据包，表示套接字已经被挂起，锁定套接字并检查挂起数据包的类型。
 	fl4 = &inet->cork.fl.u.ip4;
 	if (up->pending) {
 		/*
@@ -1075,11 +1095,12 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		}
 		release_sock(sk);
 	}
-	ulen += sizeof(struct udphdr);
+	ulen += sizeof(struct udphdr); // 将 ulen 增加一个 UDP 头部的大小
 
 	/*
 	 *	Get and verify the address.
 	 */
+	// 检查是否提供了目标地址结构体指针 usin。如果存在，表示用户指定了目标地址。
 	if (usin) {
 		if (msg->msg_namelen < sizeof(*usin))
 			return -EINVAL;
@@ -1090,9 +1111,10 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 
 		daddr = usin->sin_addr.s_addr;
 		dport = usin->sin_port;
-		if (dport == 0)
+		if (dport == 0) // 如果目标端口为0，表示目标端口无效，返回错误码 -EINVAL 表示参数无效
 			return -EINVAL;
 	} else {
+		// 如果没有提供目标地址结构体指针 usin，则检查套接字状态 (sk->sk_state) 是否为 TCP_ESTABLISHED。
 		if (sk->sk_state != TCP_ESTABLISHED)
 			return -EDESTADDRREQ;
 		daddr = inet->inet_daddr;
@@ -1103,10 +1125,11 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		connected = 1;
 	}
 
-	ipcm_init_sk(&ipc, inet);
+	ipcm_init_sk(&ipc, inet); // 初始化 ipc 变量，设置 ipc 的字段，包括 opt 和 gso_size。
 	ipc.gso_size = READ_ONCE(up->gso_size);
 
-	if (msg->msg_controllen) {
+	if (msg->msg_controllen) {  // 判断消息的控制信息长度 (msg_controllen) 是否大于 0。
+		// 如果是，则调用 udp_cmsg_send 函数和 ip_cmsg_send 函数来处理控制信息。
 		err = udp_cmsg_send(sk, msg, &ipc.gso_size);
 		if (err > 0)
 			err = ip_cmsg_send(sk, msg, &ipc,
@@ -1131,7 +1154,7 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		}
 		rcu_read_unlock();
 	}
-
+	// 如果启用了 cgroup BPF，并且不是已连接套接字，则运行 cgroup BPF 程序来检查是否允许发送消息。
 	if (cgroup_bpf_enabled && !connected) {
 		err = BPF_CGROUP_RUN_PROG_UDP4_SENDMSG_LOCK(sk,
 					    (struct sockaddr *)usin, &ipc.addr);
@@ -1159,14 +1182,16 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		faddr = ipc.opt->opt.faddr;
 		connected = 0;
 	}
+	 // 根据 ipc 和 inet 计算并返回服务类型（TOS）。
 	tos = get_rttos(&ipc, inet);
+	// 套接字标志 (sk_flag) ，消息标志 (msg_flags) 
 	if (sock_flag(sk, SOCK_LOCALROUTE) ||
 	    (msg->msg_flags & MSG_DONTROUTE) ||
 	    (ipc.opt && ipc.opt->opt.is_strictroute)) {
 		tos |= RTO_ONLINK;
 		connected = 0;
 	}
-
+	// 如果目标地址是多播地址，则进一步检查 ipc.oif 是否为空或者是否为 L3 主设备的索引。
 	if (ipv4_is_multicast(daddr)) {
 		if (!ipc.oif || netif_index_is_l3_master(sock_net(sk), ipc.oif))
 			ipc.oif = inet->mc_index;
@@ -1188,10 +1213,12 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 			ipc.oif = inet->uc_index;
 		}
 	}
-
+	/* 如果是已连接套接字，则通过 sk_dst_check 函数检查是否存在路由缓存（路由表项），并将结果赋值给 rt。
+     * 如果存在，则表示该缓存可用于发送数据。
+     */
 	if (connected)
 		rt = (struct rtable *)sk_dst_check(sk, 0);
-
+	// 如果没有路由缓存，则根据参数计算出 flowi4 并进行路由查找。
 	if (!rt) {
 		struct net *net = sock_net(sk);
 		__u8 flow_flags = inet_sk_flowi_flags(sk);
@@ -1205,6 +1232,7 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 				   sk->sk_uid);
 
 		security_sk_classify_flow(sk, flowi4_to_flowi_common(fl4));
+		// 调用 ip_route_output_flow 函数根据 fl4 查找路由，并将结果赋值给 rt。
 		rt = ip_route_output_flow(net, fl4, sk);
 		if (IS_ERR(rt)) {
 			err = PTR_ERR(rt);
@@ -1218,11 +1246,16 @@ int udp_sendmsg(struct sock *sk, struct msghdr *msg, size_t len)
 		if ((rt->rt_flags & RTCF_BROADCAST) &&
 		    !sock_flag(sk, SOCK_BROADCAST))
 			goto out;
-		if (connected)
+		if (connected) // 如果是已连接套接字，将套接字的目标地址设置为路由缓存的克隆（dst_clone(&rt->dst)）。
 			sk_dst_set(sk, dst_clone(&rt->dst));
 	}
-
-	if (msg->msg_flags&MSG_CONFIRM)
+	// MSG_CONFIRM 标志用于 UDP（用户数据报协议）套接字。
+	// 当设置了此标志时，它告诉内核需要确认远程对等方是否成功接收了发送的数据报。
+	// 它通常与 sendto() 或 sendmsg() 系统调用一起使用。工作原理如下： 
+	// 1. 当在 sendto() 或 sendmsg() 的 msg_flags 参数中设置了 MSG_CONFIRM 标志时，表示应用程序想要发送数据报，但同时希望知道远程对等方是否成功接收了数据报。
+	// 2. 在发送数据报后，sendto() 或 sendmsg() 系统调用不会立即返回，而是会阻塞并等待来自远程对等方的确认（ACK）或错误消息（ICMP 错误）。
+	// 3. 当收到远程对等方的确认或错误消息后，sendto() 或 sendmsg() 系统调用将解除阻塞并返回相应的结果，应用程序可以据此了解数据报是否成功到达目标。
+	if (msg->msg_flags&MSG_CONFIRM)  // 如果消息的标志位中包含 MSG_CONFIRM，则跳转到标签 do_confirm 处处理确认。
 		goto do_confirm;
 back_from_confirm:
 
@@ -1231,20 +1264,22 @@ back_from_confirm:
 		daddr = ipc.addr = fl4->daddr;
 
 	/* Lockless fast path for the non-corking case. */
+	// 在非延迟发送的情况下，使用 ip_make_skb 函数创建一个 sk_buff 结构体，并调用 udp_send_skb 函数发送数据。
 	if (!corkreq) {
 		struct inet_cork cork;
 
 		skb = ip_make_skb(sk, fl4, getfrag, msg, ulen,
 				  sizeof(struct udphdr), &ipc, &rt,
-				  &cork, msg->msg_flags);
+				  &cork, msg->msg_flags); // 第一次复制，user buffer到skb
 		err = PTR_ERR(skb);
 		if (!IS_ERR_OR_NULL(skb))
 			err = udp_send_skb(skb, fl4, &cork);
 		goto out;
 	}
-
+	// 如果需要延迟发送，则锁定套接字，并检查套接字是否已经被延迟发送。
 	lock_sock(sk);
 	if (unlikely(up->pending)) {
+		// 如果套接字已经被延迟发送，则释放套接字锁，返回错误码 -EINVAL，并打印警告消息。
 		/* The socket is already corked while preparing it. */
 		/* ... which is an evident application bug. --ANK */
 		release_sock(sk);
@@ -1256,6 +1291,7 @@ back_from_confirm:
 	/*
 	 *	Now cork the socket to pend data.
 	 */
+	 // 设置 fl4（路由信息）中的字段为目标地址和源地址等信息
 	fl4 = &inet->cork.fl.u.ip4;
 	fl4->daddr = daddr;
 	fl4->saddr = saddr;
@@ -1264,20 +1300,21 @@ back_from_confirm:
 	up->pending = AF_INET;
 
 do_append_data:
-	up->len += ulen;
+	up->len += ulen; // 将待发送数据的长度加上数据的长度。
+	// 将数据追加到 sk_buff 中，并根据参数设置进行处理。
 	err = ip_append_data(sk, fl4, getfrag, msg, ulen,
 			     sizeof(struct udphdr), &ipc, &rt,
 			     corkreq ? msg->msg_flags|MSG_MORE : msg->msg_flags);
-	if (err)
+	if (err) // 如果发送数据时发生错误，则清空已排队的帧。
 		udp_flush_pending_frames(sk);
-	else if (!corkreq)
+	else if (!corkreq) // 如果不需要延迟发送，则调用 udp_push_pending_frames 函数将已排队的帧发送出去
 		err = udp_push_pending_frames(sk);
 	else if (unlikely(skb_queue_empty(&sk->sk_write_queue)))
 		up->pending = 0;
 	release_sock(sk);
 
 out:
-	ip_rt_put(rt);
+	ip_rt_put(rt); // 释放路由表项 (rt)。
 out_free:
 	if (free)
 		kfree(ipc.opt);

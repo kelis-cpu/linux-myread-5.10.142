@@ -95,15 +95,18 @@ union e1000_adv_rx_desc {
 
 /* Transmit Descriptor - Advanced */
 union e1000_adv_tx_desc {
+	// 定义了读取操作的传输描述符结构。它包含以下字段
 	struct {
+		// 描述符数据缓冲区的地址（指向数据的物理内存地址）
 		__le64 buffer_addr;    /* Address of descriptor's data buf */
-		__le32 cmd_type_len;
-		__le32 olinfo_status;
+		__le32 cmd_type_len;  // 传输命令、类型和长度的组合。
+		__le32 olinfo_status; // 描述符中的多个字段，包括校验和计算、L4协议类型、OLINFO标志位和其他状态信息
 	} read;
+	// 定义了写回（Write-Back）操作的传输描述符结构
 	struct {
 		__le64 rsvd;       /* Reserved */
-		__le32 nxtseq_seed;
-		__le32 status;
+		__le32 nxtseq_seed; // 传输描述符中的下一个传输序列值和种子
+		__le32 status;  // 描述符中的状态信息，包括传输错误和其他标志位
 	} wb;
 };
 

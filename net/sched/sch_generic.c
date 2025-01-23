@@ -305,42 +305,44 @@ trace:
  *				false  - hardware queue frozen backoff
  *				true   - feel free to send more pkts
  */
+ // 用于直接发送一个数据包（可能为多个 skbs），并根据发送状态来处理返回值。
 bool sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
 		     struct net_device *dev, struct netdev_queue *txq,
 		     spinlock_t *root_lock, bool validate)
 {
-	int ret = NETDEV_TX_BUSY;
-	bool again = false;
+	int ret = NETDEV_TX_BUSY; // 初始化返回状态，默认为 NETDEV_TX_BUSY，表示发送队列忙碌
+	bool again = false; // again 用于指示是否需要重新发送数据包
 
 	/* And release qdisc */
-	if (root_lock)
+	if (root_lock) // 如果有队列 q 的锁，先释放锁。这是为了在发送之前，可以先对数据包进行验证操作。
 		spin_unlock(root_lock);
 
 	/* Note that we validate skb (GSO, checksum, ...) outside of locks */
-	if (validate)
+	if (validate) // 如果需要进行验证操作（GSO、校验和等），则对数据包进行验证
 		skb = validate_xmit_skb_list(skb, dev, &again);
 
 #ifdef CONFIG_XFRM_OFFLOAD
-	if (unlikely(again)) {
+	if (unlikely(again)) { // 验证操作中发现数据包需要重新发送，则重新获取队列 q 的锁
 		if (root_lock)
 			spin_lock(root_lock);
 
-		dev_requeue_skb(skb, q);
-		return false;
+		dev_requeue_skb(skb, q);  // 将数据包重新加入队列 q
+		return false; // 返回 false 表示数据包需要重新发送
 	}
 #endif
 
 	if (likely(skb)) {
+		// 获取设备的发送队列锁，保证发送操作是原子操作
 		HARD_TX_LOCK(dev, txq, smp_processor_id());
-		if (!netif_xmit_frozen_or_stopped(txq))
-			skb = dev_hard_start_xmit(skb, dev, txq, &ret);
+		if (!netif_xmit_frozen_or_stopped(txq))  // 检查设备的发送队列是否被冻结或停止
+			skb = dev_hard_start_xmit(skb, dev, txq, &ret); // 发送数据包，并获取发送状态
 		else
-			qdisc_maybe_clear_missed(q, txq);
+			qdisc_maybe_clear_missed(q, txq); // 清除发送队列的丢失标志
 
-		HARD_TX_UNLOCK(dev, txq);
+		HARD_TX_UNLOCK(dev, txq);  // 释放设备的发送队列锁
 	} else {
 		if (root_lock)
-			spin_lock(root_lock);
+			spin_lock(root_lock); // 获取队列 q 的锁，如果之前释放过，则重新获取锁
 		return true;
 	}
 
@@ -351,13 +353,13 @@ bool sch_direct_xmit(struct sk_buff *skb, struct Qdisc *q,
 		/* Driver returned NETDEV_TX_BUSY - requeue skb */
 		if (unlikely(ret != NETDEV_TX_BUSY))
 			net_warn_ratelimited("BUG %s code %d qlen %d\n",
-					     dev->name, ret, q->q.qlen);
+					     dev->name, ret, q->q.qlen); // 打印警告信息
 
-		dev_requeue_skb(skb, q);
+		dev_requeue_skb(skb, q); // 将数据包重新加入队列 q
 		return false;
 	}
 
-	return true;
+	return true;  // 发送操作成功，返回 true 表示可以继续发送更多的数据包
 }
 
 /*
@@ -388,6 +390,7 @@ static inline bool qdisc_restart(struct Qdisc *q, int *packets)
 	bool validate;
 
 	/* Dequeue packet */
+	 // 从 qdisc 中取出一个待发送的 skb
 	skb = dequeue_skb(q, &validate, packets);
 	if (unlikely(!skb))
 		return false;
@@ -396,8 +399,8 @@ static inline bool qdisc_restart(struct Qdisc *q, int *packets)
 		root_lock = qdisc_lock(q);
 
 	dev = qdisc_dev(q);
-	txq = skb_get_tx_queue(dev, skb);
-
+	txq = skb_get_tx_queue(dev, skb); // 获取数据包对应的发送队列 txq
+	// 尝试直接发送数据包。如果队列允许直接发送，则将数据包发送出去，并返回 true 表示队列不为空，可以继续处理
 	return sch_direct_xmit(skb, q, dev, txq, root_lock, validate);
 }
 
@@ -405,10 +408,12 @@ void __qdisc_run(struct Qdisc *q)
 {
 	int quota = READ_ONCE(dev_tx_weight);
 	int packets;
-
+	// 循环从队列取出一个 skb 并发送
 	while (qdisc_restart(q, &packets)) {
-		quota -= packets;
+		quota -= packets; // 根据权重减少配额
 		if (quota <= 0) {
+			// 将队列放入网络设备的调度列表中，以便稍后继续在软中断中处理队列中的数据包。这样做是为了避免队列处理过程中长时间持有锁而导致其他任务无法执行。
+			// 这是导致 NET_RX_SOFTIRQ 比 NET_TX_SOFTIRQ 多的第一个原因。
 			__netif_schedule(q);
 			break;
 		}

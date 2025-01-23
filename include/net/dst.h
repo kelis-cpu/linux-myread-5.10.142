@@ -440,6 +440,8 @@ static inline void dst_set_expires(struct dst_entry *dst, int timeout)
 /* Output packet to network from transport.  */
 static inline int dst_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
+	// 通过 skb_dst(skb)->output 获取数据包对应的网络输出函数指针，并根据协议类型（IPv4 或 IPv6）调用相应的网络输出函数，实现数据包的发送。这样，数据包就会继续在网络层传递，并最终发送到目标地址。
+	// IPv4 对应的处理函数是 ip_output
 	return skb_dst(skb)->output(net, sk, skb);
 }
 

@@ -1497,26 +1497,27 @@ static void neigh_hh_init(struct neighbour *n)
 int neigh_resolve_output(struct neighbour *neigh, struct sk_buff *skb)
 {
 	int rc = 0;
-
+	// 如果邻居没有处于事件队列中，则发送邻居事件（arp请求）
 	if (!neigh_event_send(neigh, skb)) {
 		int err;
 		struct net_device *dev = neigh->dev;
 		unsigned int seq;
-
+		// 如果网络设备有头部缓存且硬件头部缓存长度为0，则初始化硬件头部缓存
 		if (dev->header_ops->cache && !READ_ONCE(neigh->hh.hh_len))
 			neigh_hh_init(neigh);
 
 		do {
-			__skb_pull(skb, skb_network_offset(skb));
+			__skb_pull(skb, skb_network_offset(skb));  // 移动 sk_buff 的网络层偏移，即准备数据部分
+			// 获取邻居硬件地址锁，并在获取硬件地址前获取邻居硬件地址
 			seq = read_seqbegin(&neigh->ha_lock);
 			err = dev_hard_header(skb, dev, ntohs(skb->protocol),
 					      neigh->ha, NULL, skb->len);
-		} while (read_seqretry(&neigh->ha_lock, seq));
+		} while (read_seqretry(&neigh->ha_lock, seq)); // 检查获取硬件地址时是否发生了竞态条件
 
 		if (err >= 0)
-			rc = dev_queue_xmit(skb);
+			rc = dev_queue_xmit(skb);  // 如果获取硬件地址成功，则将 sk_buff 发送出去
 		else
-			goto out_kfree_skb;
+			goto out_kfree_skb;  // 如果获取硬件地址失败，则释放 sk_buff 并返回错误码
 	}
 out:
 	return rc;

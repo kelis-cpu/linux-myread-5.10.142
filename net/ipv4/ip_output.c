@@ -99,19 +99,22 @@ EXPORT_SYMBOL(ip_send_check);
 int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	struct iphdr *iph = ip_hdr(skb);
-
+	// 设置IPv4首部的总长度字段（total length），将skb的长度转换为网络字节序（大端序）
 	iph->tot_len = htons(skb->len);
+	// 计算IPv4首部的校验和字段（checksum）
 	ip_send_check(iph);
 
 	/* if egress device is enslaved to an L3 master device pass the
 	 * skb to its handler for processing
 	 */
+	 // 将skb传递给L3 master设备（例如路由器或虚拟路由器）的处理程序进行处理，例如 VLAN 网络和虚拟路由。
 	skb = l3mdev_ip_out(sk, skb);
+	// 如果skb为NULL，表示已经被处理，无需继续传递，直接返回0
 	if (unlikely(!skb))
 		return 0;
 
-	skb->protocol = htons(ETH_P_IP);
-
+	skb->protocol = htons(ETH_P_IP); // 设置skb的协议字段为IPv4协议（ETH_P_IP）
+	// 调用网络过滤钩子（Netfilter hook）处理数据包
 	return nf_hook(NFPROTO_IPV4, NF_INET_LOCAL_OUT,
 		       net, sk, skb, NULL, skb_dst(skb)->dev,
 		       dst_output);
@@ -120,12 +123,13 @@ int __ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 int ip_local_out(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	int err;
-
+	// 调用 __ip_local_out 函数将 skb 发送到本地IP层
 	err = __ip_local_out(net, sk, skb);
+	// 如果 __ip_local_out 返回值为1，表示数据包还未发送到目标，继续处理
 	if (likely(err == 1))
 		err = dst_output(net, sk, skb);
 
-	return err;
+	return err; // 返回发送的结果，可能是错误码或者是1（数据包还未发送到目标）
 }
 EXPORT_SYMBOL_GPL(ip_local_out);
 
@@ -199,13 +203,14 @@ static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *s
 	unsigned int hh_len = LL_RESERVED_SPACE(dev);
 	struct neighbour *neigh;
 	bool is_v6gw = false;
-
+	 // 更新IPv4协议统计信息中的多播数据包或广播数据包的数量
 	if (rt->rt_type == RTN_MULTICAST) {
 		IP_UPD_PO_STATS(net, IPSTATS_MIB_OUTMCAST, skb->len);
 	} else if (rt->rt_type == RTN_BROADCAST)
 		IP_UPD_PO_STATS(net, IPSTATS_MIB_OUTBCAST, skb->len);
 
 	/* Be paranoid, rather than too clever. */
+	// 检查是否需要扩展数据包头部空间，并进行扩展,确保数据报能够存放mac头
 	if (unlikely(skb_headroom(skb) < hh_len && dev->header_ops)) {
 		struct sk_buff *skb2;
 
@@ -219,7 +224,7 @@ static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *s
 		consume_skb(skb);
 		skb = skb2;
 	}
-
+	 // 检查是否需要进行隧道传输，并进行隧道传输处理
 	if (lwtunnel_xmit_redirect(dst->lwtstate)) {
 		int res = lwtunnel_xmit(skb);
 
@@ -228,18 +233,19 @@ static int ip_finish_output2(struct net *net, struct sock *sk, struct sk_buff *s
 	}
 
 	rcu_read_lock_bh();
-	neigh = ip_neigh_for_gw(rt, skb, &is_v6gw);
+	neigh = ip_neigh_for_gw(rt, skb, &is_v6gw); // 通过路由表查找下一跳的邻居，并向邻居发送数据包
 	if (!IS_ERR(neigh)) {
 		int res;
 
 		sock_confirm_neigh(skb, neigh);
 		/* if crossing protocols, can not use the cached header */
+		// 调用 neigh_output 函数向邻居发送数据包
 		res = neigh_output(neigh, skb, is_v6gw);
 		rcu_read_unlock_bh();
 		return res;
 	}
 	rcu_read_unlock_bh();
-
+	// 如果找不到下一跳的邻居，则释放数据包，并返回错误
 	net_dbg_ratelimited("%s: No header cache and no neighbour!\n",
 			    __func__);
 	kfree_skb(skb);
@@ -297,7 +303,7 @@ static int ip_finish_output_gso(struct net *net, struct sock *sk,
 static int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	unsigned int mtu;
-
+	// 如果skb绑定了XFRM（安全传输模块），表示需要进行策略查找，重新路由
 #if defined(CONFIG_NETFILTER) && defined(CONFIG_XFRM)
 	/* Policy lookup after SNAT yielded a new policy */
 	if (skb_dst(skb)->xfrm) {
@@ -305,28 +311,28 @@ static int __ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *
 		return dst_output(net, sk, skb);
 	}
 #endif
-	mtu = ip_skb_dst_mtu(sk, skb);
-	if (skb_is_gso(skb))
+	mtu = ip_skb_dst_mtu(sk, skb); // 获取IP协议层的MTU（最大传输单元）
+	if (skb_is_gso(skb))  // 如果skb是GSO（Generic Segmentation Offload）数据包，则使用特定函数处理
 		return ip_finish_output_gso(net, sk, skb, mtu);
 
 	if (skb->len > mtu || IPCB(skb)->frag_max_size)
-		return ip_fragment(net, sk, skb, mtu, ip_finish_output2);
-
-	return ip_finish_output2(net, sk, skb);
+		return ip_fragment(net, sk, skb, mtu, ip_finish_output2); // 如果skb长度大于MTU或者有分片信息（IPCB(skb)->frag_max_size），则进行分片处理
+	// ip_finish_output_gso 函数和 ip_fragment 函数最后也都是调用了 ip_finish_output2 函数继续处理。
+	return ip_finish_output2(net, sk, skb); // 否则直接进行IP输出处理
 }
 
 static int ip_finish_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 {
 	int ret;
-
+	// 调用BPF_CGROUP_RUN_PROG_INET_EGRESS函数进行BPF过滤
 	ret = BPF_CGROUP_RUN_PROG_INET_EGRESS(sk, skb);
 	switch (ret) {
-	case NET_XMIT_SUCCESS:
+	case NET_XMIT_SUCCESS: // 如果BPF过滤结果为 NET_XMIT_SUCCESS，则继续进行IP输出处理
 		return __ip_finish_output(net, sk, skb);
 	case NET_XMIT_CN:
-		return __ip_finish_output(net, sk, skb) ? : ret;
+		return __ip_finish_output(net, sk, skb) ? : ret;  // 如果BPF过滤结果为 NET_XMIT_CN，则继续进行IP输出处理，或者返回 NET_XMIT_CN
 	default:
-		kfree_skb(skb);
+		kfree_skb(skb);  // 如果BPF过滤结果为其他值，则释放数据包，并返回过滤结果
 		return ret;
 	}
 }
@@ -432,10 +438,10 @@ int ip_output(struct net *net, struct sock *sk, struct sk_buff *skb)
 	struct net_device *dev = skb_dst(skb)->dev, *indev = skb->dev;
 
 	IP_UPD_PO_STATS(net, IPSTATS_MIB_OUT, skb->len);
-
+	// 设置skb的输出网络设备和协议类型
 	skb->dev = dev;
 	skb->protocol = htons(ETH_P_IP);
-
+	// 调用 ip_finish_output 函数继续发送数据包到指定的物理设备
 	return NF_HOOK_COND(NFPROTO_IPV4, NF_INET_POST_ROUTING,
 			    net, sk, skb, indev, dev,
 			    ip_finish_output,
@@ -1024,7 +1030,7 @@ static int __ip_append_data(struct sock *sk,
 	    (!(flags & MSG_MORE) || cork->gso_size) &&
 	    (!exthdrlen || (rt->dst.dev->features & NETIF_F_HW_ESP_TX_CSUM)))
 		csummode = CHECKSUM_PARTIAL;
-
+	// 零拷贝相关
 	if (flags & MSG_ZEROCOPY && length && sock_flag(sk, SOCK_ZEROCOPY)) {
 		uarg = sock_zerocopy_realloc(sk, length, skb_zcopy(skb));
 		if (!uarg)
@@ -1577,10 +1583,11 @@ int ip_send_skb(struct net *net, struct sk_buff *skb)
 {
 	int err;
 
-	err = ip_local_out(net, skb->sk, skb);
+	err = ip_local_out(net, skb->sk, skb); // 调用ip_local_out函数将skb发送到IP层
 	if (err) {
 		if (err > 0)
 			err = net_xmit_errno(err);
+		 // 如果发送出错，则增加IP层的输出丢弃统计数
 		if (err)
 			IP_INC_STATS(net, IPSTATS_MIB_OUTDISCARDS);
 	}
